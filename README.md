@@ -240,3 +240,6 @@ split by responsibility.
 The `/api/download` endpoint also gained an optional `subtitles` field
 (`""` = off, `"all"` = every language, or e.g. `"en,fa"`).
 
+## 📄 License
+
+MIT License — feel free to use and modify.

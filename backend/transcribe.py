@@ -36,7 +36,6 @@ import os
 # CPU/GPU job runs at a time here, so the performance risk it warns about
 # doesn't really apply).
 os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-
 import logging
 import re
 import sys
