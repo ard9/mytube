@@ -264,22 +264,30 @@ def rename_video(rel_path: str, new_title: str) -> dict:
 # Subtitle search
 # --------------------------------------------------------------------------- #
 _TIMESTAMP_RE = re.compile(
-    r"(\d{2}):(\d{2}):(\d{2})[.,]\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}[.,]\d{3}"
+    r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})\s*-->\s*"
+    r"(\d{2}):(\d{2}):(\d{2})[.,](\d{3})"
 )
 
 
-def _parse_subtitle_cues(text: str) -> list[tuple[float, str]]:
+def _parse_subtitle_cues(text: str) -> list[tuple[float, float, str]]:
     """
-    Parse .srt/.vtt content into a list of (start_seconds, cue_text) tuples.
-    Cue text has cue-internal newlines collapsed to spaces.
+    Parse .srt/.vtt content into a list of (start_seconds, end_seconds, cue_text)
+    tuples. Cue text has cue-internal newlines collapsed to spaces.
     """
-    cues: list[tuple[float, str]] = []
+    cues: list[tuple[float, float, str]] = []
     lines = text.replace("\r", "").split("\n")
     i = 0
     while i < len(lines):
         m = _TIMESTAMP_RE.search(lines[i])
         if m:
-            start = int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+            start = (
+                int(m.group(1)) * 3600 + int(m.group(2)) * 60
+                + int(m.group(3)) + int(m.group(4)) / 1000
+            )
+            end = (
+                int(m.group(5)) * 3600 + int(m.group(6)) * 60
+                + int(m.group(7)) + int(m.group(8)) / 1000
+            )
             i += 1
             body = []
             while i < len(lines) and lines[i].strip() and not _TIMESTAMP_RE.search(lines[i]):
@@ -288,7 +296,7 @@ def _parse_subtitle_cues(text: str) -> list[tuple[float, str]]:
                 i += 1
             cue_text = " ".join(b for b in body if b)
             if cue_text:
-                cues.append((start, cue_text))
+                cues.append((start, end, cue_text))
         else:
             i += 1
     return cues
@@ -324,8 +332,8 @@ def search_subtitles(query: str, limit_per_video: int = 3) -> list[dict]:
             continue
         cues = _parse_subtitle_cues(text)
         matches = [
-            {"time": start, "text": cue_text}
-            for start, cue_text in cues
+            {"time": start, "end": end, "text": cue_text}
+            for start, end, cue_text in cues
             if q in cue_text.lower()
         ][:limit_per_video]
         if matches:
@@ -362,7 +370,7 @@ def search_subtitle_in_video(rel_path: str, query: str) -> list[dict]:
 
     cues = _parse_subtitle_cues(text)
     return [
-        {"time": start, "text": cue_text}
-        for start, cue_text in cues
+        {"time": start, "end": end, "text": cue_text}
+        for start, end, cue_text in cues
         if q in cue_text.lower()
     ]

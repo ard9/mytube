@@ -16,7 +16,26 @@ export const state = {
 
   // subtitle ("CC") search mode
   subSearch: false,
-  subResults: {},        // {video_path: [{time, text}]}  (only when subSearch is on)
+  subResults: {},        // {video_path: [{time, end, text}]}  (only when subSearch is on)
+
+  // dictionary (words / sentences)
+  dictionary: [],        // [{id, text, meaning, created, source, media, srs}]  newest first
+  dictFfmpeg: true,      // whether the server can cut media clips
+  dictSearch: '',        // filter text for the dictionary page
+  dictRevealAll: false,  // false = meanings hidden (flashcard mode), reveal per-card on tap
+  dictStatus: 'all',     // all | due | new | learning | mastered
+  dictStats: null,       // {due, new, learning, review, mastered, streak, ...}
+
+  // study session (spaced repetition)
+  study: {
+    active: false,
+    queue: [],           // cards still to answer this session (objects with srs+_previews)
+    index: 0,            // position in queue
+    flipped: false,      // is the current card showing its meaning?
+    done: 0,             // cards finished (graduated past today) this session
+    again: 0,            // count of "Again"/"Hard" answers this session
+    total: 0,            // queue length when the session started
+  },
 
   // playback prefs (persisted locally per browser)
   playbackRate: Number(localStorage.getItem('mytube_rate')) || 1,

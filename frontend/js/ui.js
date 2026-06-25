@@ -177,7 +177,10 @@ function subMatchSnippet(v) {
   if (!hits || !hits.length) return '';
   const q = state.search.trim();
   const first = hits[0];
-  return `<span class="sub-match"><span class="ts">${fmtTimestamp(first.time)}</span>${highlightMatch(first.text, q)}</span>`;
+  return `<span class="sub-match">
+    <span class="ts">${fmtTimestamp(first.time)}</span>${highlightMatch(first.text, q)}
+    <button class="dict-add-btn inline" title="Add this line to your dictionary">&#128214;&#43;</button>
+  </span>`;
 }
 
 /* ----- "Find in this video" results (search within one video's own subtitle) ----- */
@@ -192,13 +195,26 @@ export function renderFindResults(matches, query) {
     return;
   }
 
-  const rows = matches.map((m) => `
-    <div class="find-hit" data-time="${m.time}">
+  const rows = matches.map((m, i) => `
+    <div class="find-hit" data-time="${m.time}" data-idx="${i}">
       <span class="ts">${fmtTimestamp(m.time)}</span>
       <span class="txt">${highlightMatch(m.text, query)}</span>
+      <button class="dict-add-btn" data-idx="${i}" title="Add this line to your dictionary">&#128214;&#43;</button>
     </div>`).join('');
   const count = `<div class="find-count">${matches.length} match${matches.length === 1 ? '' : 'es'}</div>`;
   el.innerHTML = rows + count;
+
+  // "Add to dictionary" buttons (don't trigger the row's jump-to-time click).
+  el.querySelectorAll('.dict-add-btn').forEach((btn) => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const m = matches[Number(btn.dataset.idx)];
+      window.MyTube.openAddToDict({
+        text: m.text, start: m.time, end: m.end,
+        path: state.current.path, title: state.current.title,
+      });
+    };
+  });
 
   el.querySelectorAll('.find-hit').forEach((row) => {
     row.onclick = () => {
@@ -244,6 +260,19 @@ function card(v) {
     const hits = state.subSearch ? state.subResults[v.path] : null;
     window.MyTube.openWatch(v, hits && hits[0] ? hits[0].time : null);
   };
+  // "Add to dictionary" from a caption-search snippet (doesn't open the video).
+  const addBtn = el.querySelector('.dict-add-btn');
+  if (addBtn) {
+    addBtn.onclick = (e) => {
+      e.stopPropagation();
+      const first = (state.subResults[v.path] || [])[0];
+      if (!first) return;
+      window.MyTube.openAddToDict({
+        text: first.text, start: first.time, end: first.end,
+        path: v.path, title: v.title,
+      });
+    };
+  }
   return el;
 }
 
@@ -414,6 +443,334 @@ function upNextRow(v) {
     </div>`;
   row.onclick = () => window.MyTube.openWatch(v);
   return row;
+}
+
+/* ============================================================
+   Dictionary
+   ============================================================ */
+function dictMediaMarkup(entry) {
+  const m = entry.media || {};
+  const parts = [];
+  if (m.image) {
+    parts.push(`<img class="dict-img" loading="lazy" src="${api.dictMediaUrl(m.image)}" alt="">`);
+  }
+  if (m.video) {
+    parts.push(`<video class="dict-video" controls preload="metadata" src="${api.dictMediaUrl(m.video)}"></video>`);
+  }
+  if (m.audio) {
+    parts.push(`<audio class="dict-audio" controls preload="metadata" src="${api.dictMediaUrl(m.audio)}"></audio>`);
+  }
+  return parts.length ? `<div class="dict-media">${parts.join('')}</div>` : '';
+}
+
+function dictSourceMarkup(entry) {
+  const s = entry.source;
+  if (!s) return '<span class="dict-source manual">Added manually</span>';
+  const ts = fmtTimestamp(s.start || 0);
+  return `<span class="dict-source jump" data-path="${esc(s.path)}" data-time="${s.start || 0}">
+    &#9654; ${esc(s.title || s.path)} <span class="ts">@ ${ts}</span></span>`;
+}
+
+/* ----- SRS status helpers (shared by the word bank + study screen) ----- */
+const MATURE_DAYS = 21;
+
+function srsStatus(entry) {
+  const s = entry.srs || { state: 'new', due: '', interval: 0 };
+  const today = new Date().toISOString().slice(0, 10);
+  const due = !!s.due && s.due <= today;
+  if (s.state === 'review' && (s.interval || 0) >= MATURE_DAYS) {
+    return { key: 'mastered', label: 'Mastered', due };
+  }
+  if (s.state === 'new') return { key: 'new', label: 'New', due: true };
+  if (s.state === 'learning') return { key: 'learning', label: 'Learning', due };
+  return { key: 'review', label: due ? 'Due' : 'Scheduled', due };
+}
+
+function nextDueLabel(entry) {
+  const s = entry.srs;
+  if (!s || s.state === 'new') return 'New card';
+  const today = new Date().toISOString().slice(0, 10);
+  if (s.due <= today) return 'Due now';
+  const days = Math.max(0, Math.round((new Date(s.due) - new Date(today)) / 86400000));
+  if (days <= 0) return 'Due now';
+  if (days === 1) return 'Next: tomorrow';
+  if (days < 7) return `Next: ${days}d`;
+  if (days < 30) return `Next: ${Math.round(days / 7)}wk`;
+  if (days < 365) return `Next: ${Math.round(days / 30)}mo`;
+  return `Next: ${(days / 365).toFixed(1)}yr`;
+}
+
+/* ----- the stats strip + study button on the word-bank header ----- */
+export function renderDictHeader() {
+  const st = state.dictStats;
+  const strip = $('dictStatsStrip');
+  const studyBtn = $('dictStudyBtn');
+  const studyCount = $('dictStudyCount');
+  if (!strip) return;
+
+  if (!st || !st.total) {
+    strip.innerHTML = '';
+    if (studyBtn) studyBtn.classList.add('empty');
+    if (studyCount) studyCount.textContent = '0';
+  } else {
+    const flame = st.streak > 0 ? `${st.streak}` : '0';
+    strip.innerHTML = `
+      <div class="stat streak" title="Day streak">
+        <span class="stat-ico">&#128293;</span>
+        <span class="stat-num">${flame}</span><span class="stat-lbl">day streak</span>
+      </div>
+      <div class="stat"><span class="stat-num">${st.reviewed_today}</span><span class="stat-lbl">reviewed today</span></div>
+      <div class="stat"><span class="stat-num dot-new">${st.new}</span><span class="stat-lbl">new</span></div>
+      <div class="stat"><span class="stat-num dot-mastered">${st.mastered}</span><span class="stat-lbl">mastered</span></div>`;
+    const n = st.due || 0;
+    if (studyCount) studyCount.textContent = String(n);
+    if (studyBtn) {
+      studyBtn.classList.toggle('empty', n === 0);
+      studyBtn.querySelector('.study-cta-text').textContent =
+        n === 0 ? 'All caught up' : 'Start studying';
+    }
+  }
+
+  // Sidebar + topbar "due" badges.
+  const due = st ? st.due : 0;
+  for (const id of ['studyBadge', 'studyBadgeTop']) {
+    const b = $(id);
+    if (b) { b.textContent = String(due); b.hidden = !due; }
+  }
+}
+
+export function renderDictionary() {
+  renderDictHeader();
+  const list = $('dictList');
+  const q = state.dictSearch.trim().toLowerCase();
+
+  let entries = state.dictionary;
+  if (state.dictStatus !== 'all') {
+    entries = entries.filter((e) => {
+      const s = srsStatus(e);
+      return state.dictStatus === 'due' ? s.due : s.key === state.dictStatus;
+    });
+  }
+  if (q) {
+    entries = entries.filter(
+      (e) =>
+        e.text.toLowerCase().includes(q) ||
+        (e.meaning || '').toLowerCase().includes(q) ||
+        (e.source && (e.source.title || '').toLowerCase().includes(q))
+    );
+  }
+
+  document.querySelectorAll('#dictStatusChips .chip').forEach((c) =>
+    c.classList.toggle('active', c.dataset.status === state.dictStatus)
+  );
+  $('dictFfmpegHint').hidden = state.dictFfmpeg;
+  const toggle = $('dictRevealToggle');
+  if (toggle) {
+    toggle.hidden = !state.dictionary.length;
+    toggle.textContent = state.dictRevealAll ? 'Hide meanings' : 'Show meanings';
+  }
+
+  if (!state.dictionary.length) {
+    list.innerHTML = `<div class="empty small"><div class="big">&#128218;</div>
+      <h2>Your word bank is empty</h2>
+      <p>Search inside a video's captions and tap the &#128218;&#43; on any line to save the
+      sentence — with its audio, a snapshot, or a video clip — or add a word manually.
+      Everything you save becomes a flashcard you can drill in <b>Study</b>.</p>
+      <button class="pill-btn accent" id="dictEmptyAdd"><span>&#43;</span> Add a word</button></div>`;
+    $('dictEmptyAdd')?.addEventListener('click', () => window.MyTube.openAddToDict(null));
+    return;
+  }
+
+  if (!entries.length) {
+    const what = q ? `matches "${esc(state.dictSearch.trim())}"` : `is ${esc(state.dictStatus)}`;
+    list.innerHTML = `<div class="empty small"><div class="big">&#128269;</div>
+      <h2>Nothing here</h2><p>No word in your bank ${what}.</p></div>`;
+    return;
+  }
+
+  list.innerHTML = '';
+  entries.forEach((e) => list.appendChild(dictCard(e)));
+}
+
+function dictCard(entry) {
+  const el = document.createElement('div');
+  el.className = 'dict-card';
+  const st = srsStatus(entry);
+  el.classList.add(`s-${st.key}`);
+
+  const hasMeaning = !!(entry.meaning && entry.meaning.trim());
+  const meaningHtml = hasMeaning
+    ? `<div class="dict-meaning-wrap${state.dictRevealAll ? ' revealed' : ''}">
+         <div class="reveal-hint">&#128065; Tap to reveal meaning</div>
+         <div class="dict-meaning">${esc(entry.meaning)}</div>
+       </div>`
+    : `<div class="dict-meaning empty">No meaning yet — click Edit to add one.</div>`;
+
+  el.innerHTML = `
+    <div class="dict-card-rail"></div>
+    <div class="dict-card-body">
+      <div class="dict-card-top">
+        <span class="srs-badge ${st.key}">${st.label}</span>
+        <span class="srs-next">${nextDueLabel(entry)}</span>
+      </div>
+      <div class="dict-text">${esc(entry.text)}</div>
+      ${meaningHtml}
+      ${dictMediaMarkup(entry)}
+      <div class="dict-foot">
+        ${dictSourceMarkup(entry)}
+        <div class="dict-actions">
+          <button class="pill-btn ghost small" data-edit>Edit</button>
+          <button class="pill-btn ghost small danger" data-del>Delete</button>
+        </div>
+      </div>
+    </div>`;
+
+  const wrap = el.querySelector('.dict-meaning-wrap');
+  if (wrap) wrap.onclick = () => wrap.classList.toggle('revealed');
+
+  el.querySelector('[data-edit]').onclick = () => window.MyTube.openEditDict(entry);
+  el.querySelector('[data-del]').onclick = () => window.MyTube.deleteDictEntry(entry);
+  const jump = el.querySelector('.dict-source.jump');
+  if (jump) {
+    jump.onclick = () =>
+      window.MyTube.jumpToSource(jump.dataset.path, Number(jump.dataset.time));
+  }
+  return el;
+}
+
+/* ============================================================
+   Study (spaced-repetition flashcards)
+   ============================================================ */
+const RATINGS = [
+  { n: 1, key: 'again', label: 'Again', kbd: '1' },
+  { n: 2, key: 'hard', label: 'Hard', kbd: '2' },
+  { n: 3, key: 'good', label: 'Good', kbd: '3' },
+  { n: 4, key: 'easy', label: 'Easy', kbd: '4' },
+];
+
+function studyMediaMarkup(entry) {
+  const m = entry.media || {};
+  const parts = [];
+  if (m.image) parts.push(`<img class="study-img" src="${api.dictMediaUrl(m.image)}" alt="">`);
+  if (m.video) parts.push(`<video class="study-video" controls playsinline preload="metadata" src="${api.dictMediaUrl(m.video)}"></video>`);
+  if (m.audio) parts.push(`<audio class="study-audio" id="studyAudio" controls preload="auto" src="${api.dictMediaUrl(m.audio)}"></audio>`);
+  return parts.length ? `<div class="study-media">${parts.join('')}</div>` : '';
+}
+
+export function renderStudy() {
+  const shell = $('studyShell');
+  if (!shell) return;
+  const s = state.study;
+
+  // Not in a session yet → show the lobby (or the "all done" state).
+  if (!s.active) {
+    const st = state.dictStats || {};
+    const due = st.due || 0;
+    if (!st.total) {
+      shell.innerHTML = `<div class="study-lobby">
+        <div class="study-lobby-icon">&#128218;</div>
+        <h2>Nothing to study yet</h2>
+        <p>Capture some words from your videos first — every saved line becomes a flashcard here.</p>
+        <button class="pill-btn accent" data-route="dictionary">Go to word bank</button></div>`;
+      shell.querySelector('[data-route]').onclick = () => window.MyTube.goRoute('dictionary');
+      return;
+    }
+    shell.innerHTML = `<div class="study-lobby">
+      <div class="study-ring ${due ? '' : 'done'}">
+        <span class="study-ring-num">${due}</span>
+        <span class="study-ring-lbl">${due === 1 ? 'card due' : 'cards due'}</span>
+      </div>
+      <h2>${due ? 'Ready when you are' : 'You’re all caught up'}</h2>
+      <p>${due
+        ? `${st.due_review} to review · ${st.new_available} new · ${st.streak}-day streak &#128293;`
+        : `Come back later for the next batch. ${st.streak}-day streak &#128293;`}</p>
+      ${due ? `<button class="study-cta big" id="studyStart">
+        <span class="study-cta-bolt">&#9889;</span>
+        <span class="study-cta-text">Study ${due} ${due === 1 ? 'card' : 'cards'}</span></button>` : ''}
+      <div class="study-legend">
+        <span><i class="dot dot-new"></i>${st.new} new</span>
+        <span><i class="dot dot-learning"></i>${st.learning} learning</span>
+        <span><i class="dot dot-review"></i>${st.review} in review</span>
+        <span><i class="dot dot-mastered"></i>${st.mastered} mastered</span>
+      </div></div>`;
+    const start = $('studyStart');
+    if (start) start.onclick = () => window.MyTube.startStudy();
+    return;
+  }
+
+  // Session finished.
+  if (s.index >= s.queue.length) {
+    const accuracy = s.total ? Math.round(((s.total - s.again) / s.total) * 100) : 100;
+    shell.innerHTML = `<div class="study-lobby">
+      <div class="study-done-check">&#10003;</div>
+      <h2>Session complete</h2>
+      <p>${s.total} ${s.total === 1 ? 'card' : 'cards'} reviewed · ${accuracy}% you knew on the first try.</p>
+      <div class="study-done-actions">
+        <button class="pill-btn accent" id="studyAgain">Study more</button>
+        <button class="pill-btn ghost" id="studyToBank">Back to word bank</button>
+      </div></div>`;
+    $('studyAgain').onclick = () => window.MyTube.startStudy();
+    $('studyToBank').onclick = () => window.MyTube.goRoute('dictionary');
+    return;
+  }
+
+  // Active card.
+  const entry = s.queue[s.index];
+  const st = srsStatus(entry);
+  const prev = entry._previews || {};
+  const pct = s.total ? Math.round((s.index / s.total) * 100) : 0;
+
+  shell.innerHTML = `
+    <div class="study-top">
+      <button class="study-exit" id="studyExit" title="End session">&#10005;</button>
+      <div class="study-progress"><div class="study-progress-fill" style="width:${pct}%"></div></div>
+      <div class="study-counter">${s.index + 1} / ${s.total}</div>
+    </div>
+
+    <div class="study-card ${s.flipped ? 'flipped' : ''}" id="studyCard">
+      <div class="study-card-face front">
+        <span class="srs-badge ${st.key}">${st.label}</span>
+        <div class="study-word">${esc(entry.text)}</div>
+        ${studyMediaMarkup(entry)}
+        <div class="study-flip-hint">Tap, or press <kbd>Space</kbd>, to reveal</div>
+      </div>
+      <div class="study-card-face back">
+        <div class="study-word small">${esc(entry.text)}</div>
+        <div class="study-divider"></div>
+        ${entry.meaning && entry.meaning.trim()
+          ? `<div class="study-meaning">${esc(entry.meaning)}</div>`
+          : `<div class="study-meaning empty">No meaning saved for this card yet.</div>`}
+        ${entry.source ? `<div class="study-source jump" data-path="${esc(entry.source.path)}" data-time="${entry.source.start || 0}">
+          &#9654; ${esc(entry.source.title || entry.source.path)} <span class="ts">@ ${fmtTimestamp(entry.source.start || 0)}</span></div>` : ''}
+      </div>
+    </div>
+
+    ${s.flipped
+      ? `<div class="rating-row">${RATINGS.map((r) => `
+          <button class="rate-btn ${r.key}" data-rating="${r.n}">
+            <span class="rate-label">${r.label}</span>
+            <span class="rate-when">${prev[String(r.n)] || ''}</span>
+            <span class="rate-kbd">${r.kbd}</span>
+          </button>`).join('')}</div>`
+      : `<button class="reveal-btn" id="studyReveal">Show answer <kbd>Space</kbd></button>`}
+  `;
+
+  $('studyExit').onclick = () => window.MyTube.endStudy();
+  const card = $('studyCard');
+  if (card) card.onclick = (e) => { if (!e.target.closest('a,button,.study-source,audio,video')) window.MyTube.flipStudy(); };
+  const reveal = $('studyReveal');
+  if (reveal) reveal.onclick = () => window.MyTube.flipStudy();
+  shell.querySelectorAll('.rate-btn').forEach((b) =>
+    (b.onclick = () => window.MyTube.rateStudy(Number(b.dataset.rating)))
+  );
+  const jump = shell.querySelector('.study-source.jump');
+  if (jump) jump.onclick = () => window.MyTube.jumpToSource(jump.dataset.path, Number(jump.dataset.time));
+
+  // Auto-play the captured audio so you hear it before recalling.
+  if (!s.flipped) {
+    const audio = $('studyAudio');
+    if (audio) { audio.currentTime = 0; audio.play().catch(() => {}); }
+  }
 }
 
 /* ============================================================

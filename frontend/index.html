@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>MyTube — Local Library</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='70' y='15' rx='18' fill='%23ff0033'/><path d='M42 38 L42 62 L64 50 Z' fill='white'/></svg>">
+<title>Zimanova — learn from what you watch</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%23ff6f5e'/><path d='M30 62 V42 a20 20 0 0 1 40 0 M50 62 v-18' fill='none' stroke='white' stroke-width='8' stroke-linecap='round'/><circle cx='50' cy='70' r='6' fill='white'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/css/styles.css">
 </head>
 <body>
@@ -16,7 +16,7 @@
 <header class="topbar">
   <div class="brand" data-route="home">
     <span class="logo"></span>
-    <span>MyTube <small>local</small></span>
+    <span class="wordmark">Zimanova</span>
   </div>
 
   <div class="search-wrap">
@@ -26,6 +26,7 @@
   </div>
 
   <div class="topbar-actions">
+    <button class="pill-btn ghost" data-route="study"><span>&#9889;</span> Study <span id="studyBadgeTop" class="badge" hidden>0</span></button>
     <button class="pill-btn" data-route="downloads"><span>&#8595;</span> Downloads <span id="dlBadge" class="badge" hidden>0</span></button>
     <button class="pill-btn accent" data-route="add"><span>&#43;</span> Add channel</button>
   </div>
@@ -34,6 +35,12 @@
 <!-- ===================== Sidebar ===================== -->
 <aside class="sidebar">
   <nav>
+    <div class="nav-section">Learn</div>
+    <div class="nav-item study-nav" data-route="study"><span class="ico">&#9889;</span> Study
+      <span id="studyBadge" class="nav-badge" hidden>0</span></div>
+    <div class="nav-item" data-route="dictionary"><span class="ico">&#128218;</span> Word bank</div>
+    <div class="nav-sep"></div>
+    <div class="nav-section">Watch</div>
     <div class="nav-item active" data-route="home"><span class="ico">&#8962;</span> Home</div>
     <div class="nav-item" data-filter="inprogress"><span class="ico">&#9201;</span> Continue watching</div>
     <div class="nav-item" data-filter="unwatched"><span class="ico">&#9679;</span> Unwatched</div>
@@ -245,6 +252,43 @@
     <div id="jobEmpty" class="empty small"><div class="big">&#8595;</div><p>No downloads yet. Add a channel to get started.</p></div>
   </section>
 
+  <!-- Word bank (dictionary) -->
+  <section id="view-dictionary" class="view">
+    <div class="dict-hero">
+      <div class="dict-hero-left">
+        <h2 class="dict-hero-title">Word bank</h2>
+        <p class="dict-hero-sub" id="dictHeroSub">Words and lines you captured from your videos.</p>
+      </div>
+      <div class="dict-stats" id="dictStatsStrip"></div>
+      <button class="study-cta" id="dictStudyBtn">
+        <span class="study-cta-bolt">&#9889;</span>
+        <span class="study-cta-text">Start studying</span>
+        <span class="study-cta-count" id="dictStudyCount">0</span>
+      </button>
+    </div>
+
+    <div class="dict-toolbar">
+      <div class="status-chips" id="dictStatusChips">
+        <div class="chip active" data-status="all">All</div>
+        <div class="chip" data-status="due">Due</div>
+        <div class="chip" data-status="new">New</div>
+        <div class="chip" data-status="learning">Learning</div>
+        <div class="chip" data-status="mastered">Mastered</div>
+      </div>
+      <div class="spacer"></div>
+      <input type="text" id="dictSearchInput" class="dict-search" placeholder="Filter words & meanings…">
+      <button class="pill-btn ghost" id="dictRevealToggle">Show meanings</button>
+      <button class="pill-btn accent" id="dictAddManual"><span>&#43;</span> Add word</button>
+    </div>
+    <p class="hint" id="dictFfmpegHint" hidden>ffmpeg isn't installed on the server, so audio/image/video clips can't be captured — text and meanings still work. Install ffmpeg to enable clips.</p>
+    <div id="dictList" class="dict-list"></div>
+  </section>
+
+  <!-- Study (spaced-repetition flashcards) -->
+  <section id="view-study" class="view">
+    <div class="study-shell" id="studyShell"></div>
+  </section>
+
   <!-- Settings -->
   <section id="view-settings" class="view">
     <div class="panel">
@@ -287,6 +331,56 @@
     <div class="modal-actions">
       <button class="pill-btn ghost" id="deleteCancel">Cancel</button>
       <button class="pill-btn accent danger-solid" id="deleteConfirm">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Add / edit dictionary entry modal ===================== -->
+<div class="modal-backdrop" id="dictModal">
+  <div class="modal dict-modal">
+    <h3 id="dictModalTitle">Add to dictionary</h3>
+
+    <label class="field-label">Word or sentence</label>
+    <textarea id="dictText" class="dict-field" rows="2" placeholder="The word or sentence…"></textarea>
+
+    <label class="field-label">Meaning / translation</label>
+    <textarea id="dictMeaning" class="dict-field" rows="3" placeholder="What it means (you can leave this empty and fill it in later)…"></textarea>
+
+    <div id="dictSourceLine" class="dict-source-line" hidden></div>
+
+    <div id="dictMediaOpts" hidden>
+      <label class="field-label">Capture from this moment</label>
+      <div class="dict-cap-row">
+        <label class="check-row"><input type="checkbox" id="dictCapAudio" checked> &#128266; Audio clip</label>
+        <label class="check-row"><input type="checkbox" id="dictCapImage"> &#128247; Snapshot</label>
+        <label class="check-row"><input type="checkbox" id="dictCapVideo"> &#127909; Video clip</label>
+      </div>
+      <p class="hint" id="dictCapHint">Clips are cut from the video around this subtitle line.</p>
+    </div>
+
+    <div id="dictUploadOpts" hidden>
+      <label class="field-label">Media (optional)</label>
+      <div id="dictExistingMedia" class="dict-existing"></div>
+      <div class="dict-upload-row">
+        <label class="dict-upload">
+          <input type="file" id="dictUpAudio" accept="audio/*" hidden>
+          <span class="btn">&#128266; Audio</span><span class="fname" id="dictUpAudioName"></span>
+        </label>
+        <label class="dict-upload">
+          <input type="file" id="dictUpImage" accept="image/*" hidden>
+          <span class="btn">&#128247; Image</span><span class="fname" id="dictUpImageName"></span>
+        </label>
+        <label class="dict-upload">
+          <input type="file" id="dictUpVideo" accept="video/*" hidden>
+          <span class="btn">&#127909; Video</span><span class="fname" id="dictUpVideoName"></span>
+        </label>
+      </div>
+      <p class="hint">Pick an audio, image or video file from your computer to attach to this word.</p>
+    </div>
+
+    <div class="modal-actions">
+      <button class="pill-btn ghost" id="dictModalCancel">Cancel</button>
+      <button class="pill-btn accent" id="dictModalSave">Save</button>
     </div>
   </div>
 </div>

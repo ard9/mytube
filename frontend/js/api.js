@@ -54,6 +54,42 @@ export const api = {
   searchSubtitleInVideo: (path, q) =>
     fetch(`/api/subtitle_search_in_video?path=${encodeURIComponent(path)}&q=${encodeURIComponent(q)}`).then(json),
 
+  // Dictionary (words / sentences, with optional audio/image/video clips)
+  getDictionary: () => fetch('/api/dictionary').then(json),
+  addDictionaryEntry: (body) =>
+    fetch('/api/dictionary', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(json),
+  updateDictionaryEntry: (id, body) =>
+    fetch(`/api/dictionary/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(json),
+  deleteDictionaryEntry: (id) =>
+    fetch(`/api/dictionary/${id}`, { method: 'DELETE' }).then(json),
+  // Spaced repetition
+  getDictStats: () => fetch('/api/dictionary/stats').then(json),
+  getStudyCards: (limit = 0, includeNew = true) =>
+    fetch(`/api/dictionary/study?limit=${limit}&new=${includeNew}`).then(json),
+  reviewDictEntry: (id, rating) =>
+    fetch(`/api/dictionary/${id}/review`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating }),
+    }).then(json),
+  dictMediaUrl: (file) => `/api/dictionary/media?file=${encodeURIComponent(file)}`,
+  uploadDictMedia: (id, kind, file) => {
+    const fd = new FormData();
+    fd.append('kind', kind);
+    fd.append('file', file);
+    return fetch(`/api/dictionary/${id}/media`, { method: 'POST', body: fd }).then(json);
+  },
+  removeDictMedia: (id, kind) =>
+    fetch(`/api/dictionary/${id}/media/${kind}`, { method: 'DELETE' }).then(json),
+
   // Local subtitle generation (Whisper)
   transcribeAvailable: () => fetch('/api/transcribe/available').then(json),
   startTranscribe: (path, language, model, translate, modelPath) =>

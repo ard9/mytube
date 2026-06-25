@@ -1,7 +1,7 @@
 /* app.js — entrypoint: loads data, wires events, handles routing + progress. */
 
 import { api } from './api.js';
-import { state, isWatched } from './state.js';
+import { state, isWatched, esc, fmtTimestamp } from './state.js';
 import * as ui from './ui.js';
 import * as dl from './download.js';
 
@@ -13,6 +13,16 @@ window.MyTube = {
   selectChannel,
   openWatch,
   reloadLibrary: loadLibrary,
+  // dictionary
+  openAddToDict,
+  openEditDict,
+  deleteDictEntry,
+  jumpToSource,
+  // study (spaced repetition)
+  startStudy,
+  flipStudy,
+  rateStudy,
+  endStudy,
 };
 
 /* ---------- routing ---------- */
@@ -36,6 +46,20 @@ function goRoute(name) {
     setActiveNav({ route: 'downloads' });
     ui.showView('downloads');
     dl.refreshJobs();
+  } else if (name === 'dictionary') {
+    setActiveNav({ route: 'dictionary' });
+    ui.showView('dictionary');
+    ui.renderDictionary();                       // show what we have immediately
+    loadDictionary().then(() => ui.renderDictionary());  // then refresh from server
+  } else if (name === 'study') {
+    setActiveNav({ route: 'study' });
+    ui.showView('study');
+    // If a session is already running, keep it; otherwise show the lobby and
+    // refresh stats so the "cards due" count is current.
+    ui.renderStudy();
+    if (!state.study.active) {
+      loadDictionary().then(() => ui.renderStudy());
+    }
   } else if (name === 'settings') {
     setActiveNav({ route: 'settings' });
     $('setLibrary').value = state.config.library_path || '';
@@ -119,6 +143,19 @@ async function loadLibrary() {
   }
   ui.renderSidebar();
   ui.renderGrid();
+}
+
+async function loadDictionary() {
+  try {
+    const res = await api.getDictionary();
+    state.dictionary = res.entries || [];
+    state.dictFfmpeg = res.ffmpeg !== false;
+    state.dictStats = res.stats || null;
+  } catch {
+    state.dictionary = [];
+    state.dictStats = null;
+  }
+  ui.renderDictHeader();   // keep the sidebar/topbar "due" badges current
 }
 
 /* ---------- watch progress tracking ---------- */
@@ -429,6 +466,291 @@ async function cancelSubgenJob() {
   $('subgenStatus').textContent = 'Cancelled.';
 }
 
+/* ---------- dictionary ---------- */
+let dictMode = 'create';   // 'create' | 'edit'
+let dictPayload = null;    // {text,start,end,path,title} for from-video, or null for manual
+let dictEditId = null;
+
+const CAP_IDS = ['dictCapAudio', 'dictCapImage', 'dictCapVideo'];
+const UPLOAD_IDS = [['dictUpAudio', 'audio'], ['dictUpImage', 'image'], ['dictUpVideo', 'video']];
+let dictEditEntry = null;   // the entry currently open in the edit modal
+
+function showDictModal(focusMeaning) {
+  $('dictModal').classList.add('show');
+  const f = focusMeaning ? $('dictMeaning') : $('dictText');
+  f.focus();
+  if (!focusMeaning) f.select();
+}
+function closeDictModal() {
+  $('dictModal').classList.remove('show');
+}
+
+function clearDictUploads() {
+  UPLOAD_IDS.forEach(([id]) => {
+    $(id).value = '';
+    $(`${id}Name`).textContent = '';
+  });
+}
+
+// Show the media already attached to an entry (edit mode), with remove buttons.
+function renderExistingMedia(entry) {
+  const box = $('dictExistingMedia');
+  const m = entry.media || {};
+  const labels = { audio: '\u{1F50A} Audio', image: '\u{1F4F7} Image', video: '\u{1F3AC} Video' };
+  const chips = Object.keys(labels)
+    .filter((k) => m[k])
+    .map((k) => `<span class="media-chip">${labels[k]}<button data-rm="${k}" title="Remove">&#10005;</button></span>`)
+    .join('');
+  box.innerHTML = chips ? `<div class="media-chips">${chips}</div>` : '';
+  box.querySelectorAll('[data-rm]').forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        dictEditEntry = await api.removeDictMedia(dictEditEntry.id, btn.dataset.rm);
+        renderExistingMedia(dictEditEntry);
+        await loadDictionary();
+        ui.renderDictionary();
+      } catch (e) {
+        alert('Could not remove media: ' + e.message);
+      }
+    };
+  });
+}
+
+async function uploadChosenFiles(id) {
+  for (const [inputId, kind] of UPLOAD_IDS) {
+    const f = $(inputId).files[0];
+    if (f) await api.uploadDictMedia(id, kind, f);
+  }
+}
+function hasChosenFiles() {
+  return UPLOAD_IDS.some(([id]) => $(id).files.length);
+}
+
+// payload = {text,start,end,path,title} to add from a video; null = manual add.
+function openAddToDict(payload) {
+  dictMode = 'create';
+  dictPayload = payload;
+  dictEditId = null;
+  dictEditEntry = null;
+
+  const hasSource = !!(payload && payload.path);
+  $('dictModalTitle').textContent = hasSource ? 'Add to dictionary' : 'Add a word or sentence';
+  $('dictText').value = (payload && payload.text) || '';
+  $('dictMeaning').value = '';
+
+  $('dictSourceLine').hidden = !hasSource;
+  $('dictMediaOpts').hidden = !hasSource;   // capture checkboxes only when there's a video
+  $('dictUploadOpts').hidden = hasSource;   // file uploads for manual entries
+  $('dictExistingMedia').innerHTML = '';
+  clearDictUploads();
+
+  if (hasSource) {
+    $('dictSourceLine').innerHTML =
+      `From <b>${esc(payload.title || payload.path)}</b> &middot; ${fmtTimestamp(payload.start || 0)}`;
+    $('dictCapAudio').checked = true;
+    $('dictCapImage').checked = false;
+    $('dictCapVideo').checked = false;
+    CAP_IDS.forEach((id) => { $(id).disabled = !state.dictFfmpeg; });
+    $('dictCapHint').textContent = state.dictFfmpeg
+      ? 'Clips are cut from the video around this subtitle line.'
+      : "ffmpeg isn't installed on the server, so clips can't be captured — the text & meaning will still be saved.";
+  }
+  showDictModal(hasSource);  // a sentence is pre-filled → jump straight to the meaning field
+}
+
+function openEditDict(entry) {
+  dictMode = 'edit';
+  dictEditId = entry.id;
+  dictEditEntry = entry;
+  dictPayload = null;
+
+  $('dictModalTitle').textContent = 'Edit entry';
+  $('dictText').value = entry.text;
+  $('dictMeaning').value = entry.meaning || '';
+
+  if (entry.source) {
+    $('dictSourceLine').hidden = false;
+    $('dictSourceLine').innerHTML =
+      `From <b>${esc(entry.source.title || entry.source.path)}</b> &middot; ${fmtTimestamp(entry.source.start || 0)}`;
+  } else {
+    $('dictSourceLine').hidden = true;
+  }
+  $('dictMediaOpts').hidden = true;     // editing doesn't re-capture from the video
+  $('dictUploadOpts').hidden = false;   // but you can attach/replace/remove media here
+  clearDictUploads();
+  renderExistingMedia(entry);
+  showDictModal(true);
+}
+
+async function saveDict() {
+  const text = $('dictText').value.trim();
+  if (!text) { $('dictText').focus(); return; }
+  const meaning = $('dictMeaning').value;
+  const btn = $('dictModalSave');
+  const label = btn.textContent;
+  btn.disabled = true;
+
+  try {
+    if (dictMode === 'edit') {
+      await api.updateDictionaryEntry(dictEditId, { text, meaning });
+      if (hasChosenFiles()) { btn.textContent = 'Uploading…'; await uploadChosenFiles(dictEditId); }
+      closeDictModal();
+      showToast('Entry updated.');
+    } else if (dictPayload && dictPayload.path) {
+      // From a video: capture clips server-side.
+      const capture = CAP_IDS
+        .filter((id) => $(id).checked && !$(id).disabled)
+        .map((id) => ({ dictCapAudio: 'audio', dictCapImage: 'image', dictCapVideo: 'video' }[id]));
+      if (capture.length) btn.textContent = 'Capturing clip…';
+      const res = await api.addDictionaryEntry({
+        text, meaning,
+        path: dictPayload.path, title: dictPayload.title || '',
+        start: dictPayload.start || 0, end: dictPayload.end || 0, capture,
+      });
+      closeDictModal();
+      showToast(res && res._warning ? res._warning : 'Saved to dictionary.');
+    } else {
+      // Manual: create the entry, then upload any attached files.
+      const res = await api.addDictionaryEntry({ text, meaning });
+      if (hasChosenFiles()) { btn.textContent = 'Uploading…'; await uploadChosenFiles(res.id); }
+      closeDictModal();
+      showToast('Saved to dictionary.');
+    }
+    await loadDictionary();
+    ui.renderDictionary();   // harmless if the dictionary view isn't visible
+  } catch (e) {
+    alert('Could not save: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
+}
+
+async function deleteDictEntry(entry) {
+  const preview = entry.text.length > 60 ? entry.text.slice(0, 60) + '…' : entry.text;
+  if (!confirm(`Delete "${preview}" from your dictionary?\nAny saved audio/image/video clip will be removed too.`)) return;
+  try {
+    await api.deleteDictionaryEntry(entry.id);
+    await loadDictionary();
+    ui.renderDictionary();
+  } catch (e) {
+    alert('Could not delete: ' + e.message);
+  }
+}
+
+function jumpToSource(path, time) {
+  const v = state.allVideos.find((x) => x.path === path);
+  if (v) openWatch(v, time);
+  else showToast("That video isn't in your library anymore — the saved clip is still here.");
+}
+
+/* ---------- study session (spaced repetition) ---------- */
+async function startStudy() {
+  const shell = $('studyShell');
+  if (shell) shell.innerHTML = '<div class="study-lobby"><div class="study-loading">Building your session…</div></div>';
+  try {
+    const res = await api.getStudyCards();
+    state.dictStats = res.stats || state.dictStats;
+    const cards = res.cards || [];
+    if (!cards.length) {
+      state.study.active = false;
+      ui.renderStudy();
+      ui.renderDictHeader();
+      return;
+    }
+    state.study = {
+      active: true,
+      queue: cards,
+      index: 0,
+      flipped: false,
+      done: 0,
+      again: 0,
+      total: cards.length,
+    };
+    ui.showView('study');
+    setActiveNav({ route: 'study' });
+    ui.renderStudy();
+  } catch (e) {
+    showToast('Could not start studying: ' + e.message);
+    state.study.active = false;
+    ui.renderStudy();
+  }
+}
+
+function flipStudy() {
+  if (!state.study.active) return;
+  state.study.flipped = !state.study.flipped;
+  ui.renderStudy();
+}
+
+async function rateStudy(rating) {
+  const s = state.study;
+  if (!s.active || !s.flipped) return;
+  const entry = s.queue[s.index];
+  if (!entry) return;
+
+  if (rating <= 2) s.again += 1;   // "Again"/"Hard" = didn't really know it
+
+  // Advance the UI immediately; persist in the background.
+  s.index += 1;
+  s.flipped = false;
+
+  // A card you couldn't recall (Again) comes back later this same session.
+  let requeue = null;
+  if (rating === 1) {
+    requeue = { ...entry };
+    const insertAt = Math.min(s.queue.length, s.index + 3);
+    s.queue.splice(insertAt, 0, requeue);
+    s.total += 1;
+  }
+
+  ui.renderStudy();
+
+  try {
+    const res = await api.reviewDictEntry(entry.id, rating);
+    state.dictStats = res.stats || state.dictStats;
+    // keep the local copy in the main list fresh so the word bank reflects it
+    const idx = state.dictionary.findIndex((x) => x.id === entry.id);
+    if (idx >= 0 && res.entry) state.dictionary[idx].srs = res.entry.srs;
+    // refresh the requeued copy so its rating-button labels stay accurate
+    if (requeue && res.entry) {
+      requeue.srs = res.entry.srs;
+      requeue._previews = res.entry._previews || requeue._previews;
+    }
+    ui.renderDictHeader();
+  } catch (e) {
+    showToast('Review not saved: ' + e.message);
+  }
+}
+
+function endStudy() {
+  state.study.active = false;
+  state.study.queue = [];
+  state.study.index = 0;
+  state.study.flipped = false;
+  // Refresh counts, then drop the user back on the word bank.
+  loadDictionary().then(() => {
+    ui.renderDictionary();
+  });
+  goRoute('dictionary');
+}
+
+/* ---------- small transient toast ---------- */
+let toastTimer = null;
+function showToast(msg) {
+  let el = $('toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'toast';
+    el.className = 'toast';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3200);
+}
+
 /* ---------- keyboard shortcuts (active only on the watch view) ---------- */
 function handleKeydown(e) {
   if (!$('view-watch').classList.contains('active')) return;
@@ -436,6 +758,7 @@ function handleKeydown(e) {
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag === 'textarea' || tag === 'input') return;
   if ($('renameModal').classList.contains('show') || $('deleteModal').classList.contains('show')) return;
+  if ($('dictModal').classList.contains('show')) return;
 
   const player = $('player');
   switch (e.key.toLowerCase()) {
@@ -477,6 +800,24 @@ function handleKeydown(e) {
 }
 
 /* ---------- event wiring ---------- */
+function handleStudyKeydown(e) {
+  if (!$('view-study').classList.contains('active')) return;
+  if (!state.study.active) return;
+  const tag = (e.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea') return;
+
+  if (e.key === 'Escape') { e.preventDefault(); endStudy(); return; }
+  if (state.study.index >= state.study.queue.length) return;  // summary screen
+
+  if (!state.study.flipped) {
+    if (e.key === ' ' || e.key.toLowerCase() === 'enter') { e.preventDefault(); flipStudy(); }
+    return;
+  }
+  // flipped → number keys rate the card
+  if (['1', '2', '3', '4'].includes(e.key)) { e.preventDefault(); rateStudy(Number(e.key)); }
+  else if (e.key === ' ') { e.preventDefault(); rateStudy(3); }  // Space = Good
+}
+
 function wireEvents() {
   document.querySelectorAll('[data-route]').forEach((el) =>
     el.addEventListener('click', () => goRoute(el.dataset.route))
@@ -596,8 +937,48 @@ function wireEvents() {
     if (on) $('subgenCustomPath').focus();
   });
 
+  // dictionary
+  $('dictAddManual').addEventListener('click', () => openAddToDict(null));
+  $('dictSearchInput').addEventListener('input', (e) => {
+    state.dictSearch = e.target.value;
+    ui.renderDictionary();
+  });
+  $('dictRevealToggle').addEventListener('click', () => {
+    state.dictRevealAll = !state.dictRevealAll;
+    ui.renderDictionary();
+  });
+  // word-bank status filter (All / Due / New / Learning / Mastered)
+  document.querySelectorAll('#dictStatusChips .chip').forEach((c) =>
+    c.addEventListener('click', () => {
+      state.dictStatus = c.dataset.status;
+      ui.renderDictionary();
+    })
+  );
+  // the big "Start studying" button on the word-bank header
+  $('dictStudyBtn').addEventListener('click', () => {
+    if (state.dictStats && state.dictStats.due > 0) startStudy();
+    else goRoute('study');
+  });
+  // show the chosen filename next to each upload button
+  UPLOAD_IDS.forEach(([id]) => {
+    $(id).addEventListener('change', () => {
+      const f = $(id).files[0];
+      $(`${id}Name`).textContent = f ? f.name : '';
+    });
+  });
+  $('dictModalCancel').addEventListener('click', closeDictModal);
+  $('dictModalSave').addEventListener('click', saveDict);
+  $('dictModal').addEventListener('click', (e) => { if (e.target.id === 'dictModal') closeDictModal(); });
+  // Ctrl/Cmd+Enter saves from either field; Esc cancels.
+  $('dictModal').addEventListener('keydown', (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); saveDict(); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeDictModal(); }
+  });
+
   // keyboard shortcuts on the watch page
   document.addEventListener('keydown', handleKeydown);
+  // keyboard shortcuts during a study session
+  document.addEventListener('keydown', handleStudyKeydown);
 
   // download panel
   dl.initButtons();
@@ -618,6 +999,7 @@ async function boot() {
   wireEvents();
   await loadConfig();
   await loadLibrary();
+  loadDictionary();   // background; populates ffmpeg availability + entries
   dl.refreshJobs();
 }
 boot();

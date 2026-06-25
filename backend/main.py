@@ -22,13 +22,14 @@ import logging
 import mimetypes
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
+import dictionary
 import downloader
 import library
 import notes
@@ -144,6 +145,25 @@ class RenameRequest(BaseModel):
 
 class DeleteRequest(BaseModel):
     path: str
+
+
+class DictionaryCreate(BaseModel):
+    text: str
+    meaning: str = ""
+    path: str = ""           # source video relative path ("" = manual entry)
+    title: str = ""          # cached source title for display
+    start: float = 0.0
+    end: float = 0.0
+    capture: list[str] = []  # any of "audio", "image", "video"
+
+
+class DictionaryUpdate(BaseModel):
+    text: str | None = None
+    meaning: str | None = None
+
+
+class DictionaryReview(BaseModel):
+    rating: int        # 1 = Again, 2 = Hard, 3 = Good, 4 = Easy
 
 
 class TranscribeRequest(BaseModel):
@@ -285,6 +305,8 @@ def api_rename(req: RenameRequest):
     # Carry over notes + watch progress to the new path.
     notes.rename_key(req.path, result["new_path"])
     progress.rename_key(req.path, result["new_path"])
+    # Keep any dictionary entry's "jump to source" link pointing at the video.
+    dictionary.rename_source(req.path, result["new_path"])
     return result
 
 
@@ -361,6 +383,103 @@ def api_notes_all():
 def api_note_set(update: NoteUpdate):
     notes.set_note(update.path, update.text)
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- #
+# Dictionary (words / sentences, with optional audio/image/video clips)
+# --------------------------------------------------------------------------- #
+@app.get("/api/dictionary")
+def api_dictionary_all():
+    return {
+        "entries": dictionary.get_all(),
+        "ffmpeg": dictionary.ffmpeg_available(),
+        "stats": dictionary.stats(),
+    }
+
+
+@app.get("/api/dictionary/stats")
+def api_dictionary_stats():
+    return dictionary.stats()
+
+
+@app.get("/api/dictionary/study")
+def api_dictionary_study(limit: int = 0, new: bool = True):
+    """The cards due for review right now, plus a fresh stats snapshot."""
+    return {
+        "cards": dictionary.get_study(limit=limit, include_new=new),
+        "stats": dictionary.stats(),
+    }
+
+
+@app.post("/api/dictionary/{entry_id}/review")
+def api_dictionary_review(entry_id: str, req: DictionaryReview):
+    try:
+        entry = dictionary.review(entry_id, req.rating)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"entry": entry, "stats": dictionary.stats()}
+
+
+@app.post("/api/dictionary")
+def api_dictionary_add(req: DictionaryCreate):
+    try:
+        return dictionary.add_entry(
+            req.text, req.meaning,
+            path=req.path, title=req.title,
+            start=req.start, end=req.end, capture=req.capture,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Source video not found")
+
+
+@app.put("/api/dictionary/{entry_id}")
+def api_dictionary_update(entry_id: str, req: DictionaryUpdate):
+    try:
+        return dictionary.update_entry(entry_id, req.text, req.meaning)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/dictionary/{entry_id}")
+def api_dictionary_delete(entry_id: str):
+    return {"deleted": dictionary.delete_entry(entry_id)}
+
+
+@app.get("/api/dictionary/media")
+def api_dictionary_media(file: str):
+    p = dictionary.media_path(file)
+    if not p:
+        raise HTTPException(status_code=404, detail="Media not found")
+    return FileResponse(p, media_type=mimetypes.guess_type(str(p))[0] or "application/octet-stream")
+
+
+@app.post("/api/dictionary/{entry_id}/media")
+def api_dictionary_attach_media(
+    entry_id: str, kind: str = Form(...), file: UploadFile = File(...)
+):
+    """Attach an uploaded audio/image/video file to an entry (replaces any existing one)."""
+    try:
+        return dictionary.attach_media(entry_id, kind, file.file, file.filename or "")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/dictionary/{entry_id}/media/{kind}")
+def api_dictionary_remove_media(entry_id: str, kind: str):
+    try:
+        return dictionary.remove_media(entry_id, kind)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Entry not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 # --------------------------------------------------------------------------- #
