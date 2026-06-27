@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Zimanova — learn from what you watch</title>
+<title>Echo — learn from what you watch</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='26' fill='%23ff6f5e'/><path d='M30 62 V42 a20 20 0 0 1 40 0 M50 62 v-18' fill='none' stroke='white' stroke-width='8' stroke-linecap='round'/><circle cx='50' cy='70' r='6' fill='white'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -16,7 +16,7 @@
 <header class="topbar">
   <div class="brand" data-route="home">
     <span class="logo"></span>
-    <span class="wordmark">Zimanova</span>
+    <span class="wordmark">Echo</span>
   </div>
 
   <div class="search-wrap">
@@ -39,6 +39,8 @@
     <div class="nav-item study-nav" data-route="study"><span class="ico">&#9889;</span> Study
       <span id="studyBadge" class="nav-badge" hidden>0</span></div>
     <div class="nav-item" data-route="dictionary"><span class="ico">&#128218;</span> Word bank</div>
+    <div class="nav-item" data-route="tts"><span class="ico">&#128266;</span> Text to speech</div>
+    <div class="nav-item" data-route="conversation"><span class="ico">&#127908;</span> Live conversation</div>
     <div class="nav-sep"></div>
     <div class="nav-section">Watch</div>
     <div class="nav-item active" data-route="home"><span class="ico">&#8962;</span> Home</div>
@@ -282,6 +284,201 @@
     </div>
     <p class="hint" id="dictFfmpegHint" hidden>ffmpeg isn't installed on the server, so audio/image/video clips can't be captured — text and meanings still work. Install ffmpeg to enable clips.</p>
     <div id="dictList" class="dict-list"></div>
+  </section>
+
+  <!-- Text to speech (StyleTTS2) -->
+  <section id="view-tts" class="view">
+    <div class="tts-layout">
+      <div class="panel tts-composer">
+        <h2>Text to speech</h2>
+        <p class="muted">Paste English text — even long text — and StyleTTS2 turns it into natural speech you can play, save, and drop straight into your Word bank as a flashcard.</p>
+        <p class="hint" id="ttsAvailHint" hidden></p>
+
+        <label class="field-label">Text</label>
+        <textarea id="ttsText" class="text-input tts-textarea" placeholder="Paste or type the English text to speak… (long text is split into sentences and stitched back together automatically)"></textarea>
+        <div class="tts-textmeta"><span id="ttsCharCount">0 characters</span></div>
+
+        <label class="field-label">Title <span class="muted">(optional)</span></label>
+        <input type="text" id="ttsTitle" class="text-input" placeholder="A name for this audio (auto-filled from the text if left blank)">
+
+        <label class="field-label">Save audio to folder <span class="muted">(optional)</span></label>
+        <div class="tts-folder-row">
+          <input type="text" id="ttsFolder" class="text-input" placeholder="e.g. D:\English\tts  —  leave blank for the default folder">
+          <button class="pill-btn ghost small" id="ttsFolderSave">Save</button>
+        </div>
+        <p class="hint" id="ttsFolderHint">New audio is saved here. Leave blank to use the default folder inside the app. Clips you already made keep their original location.</p>
+
+        <label class="field-label">Voice</label>
+        <div class="quality-row" id="ttsVoiceRow">
+          <button class="q-btn active" data-voice="">Default voice</button>
+        </div>
+        <div class="tts-voice-add">
+          <label class="dict-upload">
+            <input type="file" id="ttsVoiceFile" accept="audio/*" hidden>
+            <span class="btn">&#127908; Add a voice to clone</span><span class="fname" id="ttsVoiceFileName"></span>
+          </label>
+          <div class="tts-voice-save-row" id="ttsVoiceSaveRow" hidden>
+            <input type="text" id="ttsVoiceName" class="text-input" placeholder="Name this voice (e.g. My voice)">
+            <button class="pill-btn ghost small" id="ttsVoiceSave">Save</button>
+            <button class="pill-btn ghost small" id="ttsVoiceCancel">Cancel</button>
+          </div>
+        </div>
+        <p class="hint">Clone any speaker from a short (5–15s), clean audio clip. Saved voices appear as options above; tap one to use it.</p>
+
+        <button class="pill-btn ghost small" id="ttsAdvancedToggle" type="button">Advanced options &#9662;</button>
+        <div id="ttsAdvanced" hidden>
+          <label class="field-label">Quality (diffusion steps): <span id="ttsStepsVal">5</span></label>
+          <input type="range" id="ttsSteps" min="3" max="20" value="5" class="tts-range">
+          <label class="field-label">Expressiveness: <span id="ttsScaleVal">1.0</span></label>
+          <input type="range" id="ttsScale" min="1" max="2" step="0.1" value="1" class="tts-range">
+          <p class="hint">More steps = higher quality but slower. Higher expressiveness = more emotional, less neutral delivery.</p>
+        </div>
+
+        <button class="pill-btn accent big" id="ttsGenerate"><span>&#128266;</span> Generate speech</button>
+
+        <div id="ttsProgress" hidden>
+          <div class="progress-track"><div class="progress-fill" id="ttsFill" style="width:0%"></div></div>
+          <div class="job-meta">
+            <span id="ttsStatus">Starting…</span>
+            <button class="pill-btn ghost small" id="ttsCancel">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="tts-library-wrap">
+        <div class="section-head">
+          <h2>Generated audio</h2>
+          <span id="ttsCount" class="muted"></span>
+        </div>
+        <div id="ttsList" class="tts-list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Live conversation (speaking-practice agent) -->
+  <section id="view-conversation" class="view">
+    <div class="conv-layout">
+
+      <!-- Sessions sidebar -->
+      <div class="conv-sessions">
+        <button class="pill-btn accent big conv-new-btn" id="convNewBtn"><span>&#43;</span> New conversation</button>
+        <div class="conv-session-list" id="convSessionList"></div>
+        <button class="pill-btn ghost small conv-ai-settings-btn" id="convSettingsToggle"><span class="ico">&#9881;</span> AI settings</button>
+      </div>
+
+      <!-- Chat area -->
+      <div class="conv-main">
+        <div class="conv-head">
+          <h2 id="convTitle">Live conversation</h2>
+          <p class="muted conv-sub">Speak in English with your AI tutor. It chats about everyday life, then catches your mistakes and explains them.</p>
+          <p class="hint" id="convAvailHint" hidden></p>
+        </div>
+
+        <div class="conv-thread" id="convThread">
+          <div class="conv-empty" id="convEmpty">
+            <div class="conv-empty-icon">&#127908;</div>
+            <p>Tap <strong>New conversation</strong> to start talking with your tutor.</p>
+          </div>
+        </div>
+
+        <!-- Live interim transcript while you speak -->
+        <div class="conv-interim" id="convInterim" hidden></div>
+
+        <!-- Composer -->
+        <div class="conv-composer">
+          <div class="conv-mode-row">
+            <div class="conv-seg" id="convSttSeg" title="How your speech becomes text">
+              <span class="conv-seg-label">Input:</span>
+              <button class="conv-seg-btn active" data-stt="browser">Browser&nbsp;mic</button>
+              <button class="conv-seg-btn" data-stt="whisper">Whisper</button>
+            </div>
+            <div class="conv-seg" id="convVoiceSeg" title="How the tutor's reply is spoken">
+              <span class="conv-seg-label">Voice:</span>
+              <button class="conv-seg-btn active" data-voice="browser">Browser</button>
+              <button class="conv-seg-btn" data-voice="styletts2">StyleTTS2</button>
+            </div>
+            <label class="conv-autoplay"><input type="checkbox" id="convAutoplay" checked> Auto-play replies</label>
+          </div>
+
+          <div class="conv-input-row">
+            <button class="conv-mic" id="convMic" title="Hold or tap to speak" disabled>
+              <span class="conv-mic-ico">&#127908;</span>
+            </button>
+            <textarea id="convText" class="text-input conv-textarea" rows="1"
+                      placeholder="Press the mic and speak, or type here…" disabled></textarea>
+            <button class="pill-btn accent conv-send" id="convSend" disabled>Send</button>
+          </div>
+          <div class="conv-status" id="convStatus"></div>
+        </div>
+      </div>
+
+      <!-- AI settings drawer -->
+      <div class="conv-settings-drawer" id="convSettingsDrawer" hidden>
+        <div class="conv-settings-inner panel">
+          <div class="section-head">
+            <h2>AI settings</h2>
+            <button class="pill-btn ghost small" id="convSettingsClose">Close</button>
+          </div>
+          <p class="muted">Pick a provider and paste a free API key. Keys are stored locally on this machine only.</p>
+
+          <label class="field-label">Provider</label>
+          <div class="quality-row" id="convProviderRow">
+            <button class="q-btn active" data-provider="openrouter">OpenRouter</button>
+            <button class="q-btn" data-provider="gemini">Gemini</button>
+            <button class="q-btn" data-provider="openai">OpenAI-compatible</button>
+          </div>
+
+          <!-- OpenRouter -->
+          <div class="conv-provider-pane" data-pane="openrouter">
+            <label class="field-label">OpenRouter API key</label>
+            <input type="password" id="convOrKey" class="text-input" placeholder="sk-or-…">
+            <label class="field-label">Model</label>
+            <input type="text" id="convOrModel" class="text-input" placeholder="meta-llama/llama-3.3-70b-instruct:free">
+            <p class="hint">Free models are listed at openrouter.ai/models (filter by “:free”). Get a key at openrouter.ai/keys.</p>
+          </div>
+
+          <!-- Gemini -->
+          <div class="conv-provider-pane" data-pane="gemini" hidden>
+            <label class="field-label">Gemini API key</label>
+            <input type="password" id="convGemKey" class="text-input" placeholder="AIza…">
+            <label class="field-label">Model</label>
+            <input type="text" id="convGemModel" class="text-input" placeholder="gemini-2.0-flash">
+            <p class="hint">Get a free key at aistudio.google.com/apikey.</p>
+          </div>
+
+          <!-- OpenAI-compatible -->
+          <div class="conv-provider-pane" data-pane="openai" hidden>
+            <label class="field-label">API key</label>
+            <input type="password" id="convOaiKey" class="text-input" placeholder="sk-…">
+            <label class="field-label">Base URL</label>
+            <input type="text" id="convOaiBase" class="text-input" placeholder="https://api.openai.com/v1">
+            <label class="field-label">Model</label>
+            <input type="text" id="convOaiModel" class="text-input" placeholder="gpt-4o-mini">
+            <p class="hint">Works with any OpenAI-compatible endpoint (Groq, Together, local servers, etc.).</p>
+          </div>
+
+          <label class="field-label">Your level</label>
+          <div class="quality-row" id="convLevelRow">
+            <button class="q-btn active" data-level="auto">Auto</button>
+            <button class="q-btn" data-level="beginner">Beginner</button>
+            <button class="q-btn" data-level="intermediate">Intermediate</button>
+            <button class="q-btn" data-level="advanced">Advanced</button>
+          </div>
+
+          <label class="field-label">Whisper model <span class="muted">(for the Whisper input mode)</span></label>
+          <div class="quality-row" id="convWhisperRow">
+            <button class="q-btn" data-whisper="tiny">tiny</button>
+            <button class="q-btn active" data-whisper="base">base</button>
+            <button class="q-btn" data-whisper="small">small</button>
+            <button class="q-btn" data-whisper="medium">medium</button>
+          </div>
+
+          <button class="pill-btn accent big" id="convSettingsSave">Save AI settings</button>
+          <p class="hint" id="convSettingsMsg" hidden></p>
+        </div>
+      </div>
+
+    </div>
   </section>
 
   <!-- Study (spaced-repetition flashcards) -->

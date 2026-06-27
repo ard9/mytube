@@ -4,6 +4,7 @@ import { api } from './api.js';
 import { state, isWatched, esc, fmtTimestamp } from './state.js';
 import * as ui from './ui.js';
 import * as dl from './download.js';
+import * as conv from './conversation.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -23,6 +24,11 @@ window.MyTube = {
   flipStudy,
   rateStudy,
   endStudy,
+  // text-to-speech
+  deleteTtsVoice,
+  deleteTtsEntry,
+  ttsToFlashcards,
+  ttsAddSegment,
 };
 
 /* ---------- routing ---------- */
@@ -51,6 +57,15 @@ function goRoute(name) {
     ui.showView('dictionary');
     ui.renderDictionary();                       // show what we have immediately
     loadDictionary().then(() => ui.renderDictionary());  // then refresh from server
+  } else if (name === 'tts') {
+    setActiveNav({ route: 'tts' });
+    ui.showView('tts');
+    ui.renderTts();                              // show what we have immediately
+    openTtsPage();                               // refresh availability + library + voices
+  } else if (name === 'conversation') {
+    setActiveNav({ route: 'conversation' });
+    ui.showView('conversation');
+    conv.openConversationPage();
   } else if (name === 'study') {
     setActiveNav({ route: 'study' });
     ui.showView('study');
@@ -156,6 +171,24 @@ async function loadDictionary() {
     state.dictStats = null;
   }
   ui.renderDictHeader();   // keep the sidebar/topbar "due" badges current
+}
+
+async function loadTtsLibrary() {
+  try {
+    const res = await api.getTtsLibrary();
+    state.ttsLibrary = res.entries || [];
+  } catch {
+    state.ttsLibrary = [];
+  }
+}
+
+async function loadTtsVoices() {
+  try {
+    const res = await api.getTtsVoices();
+    state.ttsVoices = res.voices || [];
+  } catch {
+    state.ttsVoices = [];
+  }
 }
 
 /* ---------- watch progress tracking ---------- */
@@ -735,6 +768,217 @@ function endStudy() {
   goRoute('dictionary');
 }
 
+/* ---------- text-to-speech (StyleTTS2) ---------- */
+let ttsPollTimer = null;
+let ttsAvailChecked = false;
+
+async function openTtsPage() {
+  if (!ttsAvailChecked) {
+    try { state.ttsAvailable = await api.ttsAvailable(); }
+    catch { state.ttsAvailable = { available: false }; }
+    ttsAvailChecked = true;
+  }
+  const hint = $('ttsAvailHint');
+  if (state.ttsAvailable && !state.ttsAvailable.available) {
+    hint.hidden = false;
+    hint.textContent =
+      "Text-to-speech needs StyleTTS2 on the server. Run 'pip install styletts2' and restart Echo, then reload this page.";
+    $('ttsGenerate').disabled = true;
+  } else {
+    hint.hidden = true;
+    $('ttsGenerate').disabled = false;
+  }
+
+  await Promise.all([loadTtsLibrary(), loadTtsVoices()]);
+  if (state.ttsVoice && !state.ttsVoices.some((v) => v.id === state.ttsVoice)) {
+    state.ttsVoice = '';
+  }
+  $('ttsFolder').value = (state.config && state.config.tts_output_dir) || '';
+  ui.renderTts();
+}
+
+async function saveTtsFolder() {
+  const dir = $('ttsFolder').value.trim();
+  $('ttsFolderSave').disabled = true;
+  try {
+    state.config = await api.setConfig({ tts_output_dir: dir });
+    showToast(dir ? 'Saved — new audio will go to that folder.' : 'Cleared — using the default folder.');
+  } catch (e) {
+    showToast('Could not save the folder: ' + e.message);
+  } finally {
+    $('ttsFolderSave').disabled = false;
+  }
+}
+
+function updateTtsCharCount() {
+  const n = $('ttsText').value.length;
+  $('ttsCharCount').textContent = `${n.toLocaleString()} character${n === 1 ? '' : 's'}`;
+}
+
+async function startTts() {
+  const text = $('ttsText').value.trim();
+  if (!text) { $('ttsText').focus(); return; }
+
+  const btn = $('ttsGenerate');
+  btn.disabled = true;
+  try {
+    const job = await api.startTts({
+      text,
+      title: $('ttsTitle').value.trim(),
+      voice_id: state.ttsVoice || '',
+      diffusion_steps: Number($('ttsSteps').value) || 5,
+      embedding_scale: Number($('ttsScale').value) || 1,
+    });
+    $('ttsProgress').hidden = false;
+    $('ttsFill').style.width = '0%';
+    $('ttsFill').classList.add('busy');
+    $('ttsStatus').textContent = 'Starting…';
+    pollTts(job.id);
+  } catch (e) {
+    showToast('Could not start: ' + e.message);
+    btn.disabled = false;
+  }
+}
+
+function pollTts(jobId) {
+  clearInterval(ttsPollTimer);
+  ttsPollTimer = setInterval(async () => {
+    let job;
+    try { job = await api.getTtsStatus(jobId); } catch { return; }
+
+    const busy = job.stage === 'loading_model' || job.stage === 'encoding' ||
+      (job.stage === 'synthesizing' && !job.percent);
+    $('ttsFill').classList.toggle('busy', busy);
+    if (!busy) $('ttsFill').style.width = `${job.percent || 0}%`;
+
+    const stageText = {
+      queued: 'Queued…',
+      loading_model: 'Loading StyleTTS2 model (first time may download it — this can take a while)…',
+      synthesizing: `Generating speech… ${job.percent || 0}%${job.chunks_total ? ` · ${job.chunks_done}/${job.chunks_total} parts` : ''}`,
+      encoding: 'Finishing the audio file…',
+      done: 'Done!',
+    }[job.stage];
+
+    $('ttsStatus').textContent = job.status === 'error' ? 'Error: ' + (job.error || 'unknown error')
+      : job.status === 'cancelled' ? 'Cancelled.'
+      : (stageText || job.status);
+
+    if (job.status === 'done') {
+      clearInterval(ttsPollTimer);
+      ttsPollTimer = null;
+      $('ttsProgress').hidden = true;
+      $('ttsGenerate').disabled = false;
+      await loadTtsLibrary();
+      ui.renderTts();
+      showToast('Speech generated and saved.');
+    } else if (job.status === 'error' || job.status === 'cancelled') {
+      clearInterval(ttsPollTimer);
+      ttsPollTimer = null;
+      $('ttsGenerate').disabled = false;
+    }
+  }, 1200);
+}
+
+async function cancelTtsJob() {
+  try {
+    const all = await fetch('/api/tts/jobs').then((r) => r.json()).catch(() => []);
+    const mine = (all || []).find((j) => j.status === 'running' || j.status === 'queued');
+    if (mine) await api.cancelTts(mine.id).catch(() => {});
+  } catch {}
+  clearInterval(ttsPollTimer);
+  ttsPollTimer = null;
+  $('ttsStatus').textContent = 'Cancelled.';
+  $('ttsGenerate').disabled = false;
+}
+
+async function saveTtsVoice() {
+  const file = $('ttsVoiceFile').files[0];
+  if (!file) return;
+  const name = $('ttsVoiceName').value.trim();
+  $('ttsVoiceSave').disabled = true;
+  try {
+    const v = await api.addTtsVoice(name, file);
+    await loadTtsVoices();
+    state.ttsVoice = v.id;
+    resetVoiceUpload();
+    ui.renderTtsVoices();
+    showToast('Voice saved — selected for your next generation.');
+  } catch (e) {
+    showToast('Could not save voice: ' + e.message);
+  } finally {
+    $('ttsVoiceSave').disabled = false;
+  }
+}
+
+function resetVoiceUpload() {
+  $('ttsVoiceFile').value = '';
+  $('ttsVoiceFileName').textContent = '';
+  $('ttsVoiceName').value = '';
+  $('ttsVoiceSaveRow').hidden = true;
+}
+
+async function deleteTtsVoice(id) {
+  const v = state.ttsVoices.find((x) => x.id === id);
+  if (!confirm(`Delete the voice "${v ? v.name : ''}"?`)) return;
+  try {
+    await api.deleteTtsVoice(id);
+    if (state.ttsVoice === id) state.ttsVoice = '';
+    await loadTtsVoices();
+    ui.renderTtsVoices();
+  } catch (e) {
+    showToast('Could not delete voice: ' + e.message);
+  }
+}
+
+async function deleteTtsEntry(entry) {
+  const preview = entry.title || entry.text.slice(0, 50);
+  if (!confirm(`Delete "${preview}" and its audio file?`)) return;
+  try {
+    await api.deleteTtsEntry(entry.id);
+    await loadTtsLibrary();
+    ui.renderTts();
+  } catch (e) {
+    showToast('Could not delete: ' + e.message);
+  }
+}
+
+async function ttsToFlashcards(entry) {
+  try {
+    const created = await api.ttsToDictionary(entry.id, '');
+    await loadDictionary();
+    ui.renderDictionary();   // harmless if the word bank isn't visible
+    if (created && created._warning) showToast(created._warning);
+    openMeaningFor(created);
+  } catch (e) {
+    showToast('Could not add to Word bank: ' + e.message);
+  }
+}
+
+async function ttsAddSegment(entry, fromIdx, toIdx) {
+  if (toIdx == null) toIdx = fromIdx;
+  try {
+    const created = await api.ttsSegmentToDictionary(entry.id, fromIdx, toIdx, '');
+    await loadDictionary();
+    ui.renderDictionary();
+    if (created && created._warning) showToast(created._warning);
+    else if (created && created.media && !created.media.audio) {
+      showToast("Saved the text, but the audio clip wasn't attached — check ffmpeg / the server console.");
+    }
+    openMeaningFor(created);
+  } catch (e) {
+    showToast('Could not add the line: ' + e.message);
+  }
+}
+
+// After a card is created from TTS, open the edit modal (pre-filled, audio
+// already attached) so the user can add the meaning right away.
+function openMeaningFor(created) {
+  if (!created || !created.id) { showToast('Added to your Word bank.'); return; }
+  const fresh = state.dictionary.find((d) => d.id === created.id) || created;
+  showToast('Added — now add a meaning if you like.');
+  openEditDict(fresh);
+}
+
 /* ---------- small transient toast ---------- */
 let toastTimer = null;
 function showToast(msg) {
@@ -990,8 +1234,39 @@ function wireEvents() {
     setTimeout(() => ($('copyCmd').textContent = 'Copy command'), 1500);
   });
 
+  // text-to-speech
+  $('ttsText').addEventListener('input', updateTtsCharCount);
+  $('ttsGenerate').addEventListener('click', startTts);
+  $('ttsCancel').addEventListener('click', cancelTtsJob);
+  $('ttsFolderSave').addEventListener('click', saveTtsFolder);
+  $('ttsFolder').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); saveTtsFolder(); }
+  });
+  $('ttsVoiceFile').addEventListener('change', () => {
+    const f = $('ttsVoiceFile').files[0];
+    $('ttsVoiceFileName').textContent = f ? f.name : '';
+    $('ttsVoiceSaveRow').hidden = !f;
+    if (f && !$('ttsVoiceName').value.trim()) {
+      $('ttsVoiceName').value = f.name.replace(/\.[^.]+$/, '').slice(0, 40);
+    }
+  });
+  $('ttsVoiceSave').addEventListener('click', saveTtsVoice);
+  $('ttsVoiceCancel').addEventListener('click', resetVoiceUpload);
+  $('ttsAdvancedToggle').addEventListener('click', () => {
+    const adv = $('ttsAdvanced');
+    adv.hidden = !adv.hidden;
+    $('ttsAdvancedToggle').innerHTML = adv.hidden ? 'Advanced options &#9662;' : 'Advanced options &#9652;';
+  });
+  $('ttsSteps').addEventListener('input', () => { $('ttsStepsVal').textContent = $('ttsSteps').value; });
+  $('ttsScale').addEventListener('input', () => {
+    $('ttsScaleVal').textContent = Number($('ttsScale').value).toFixed(1);
+  });
+
   // settings
   $('saveSettings').addEventListener('click', saveSettings);
+
+  // live conversation agent
+  conv.initConversation();
 }
 
 /* ---------- boot ---------- */

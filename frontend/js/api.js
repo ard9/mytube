@@ -102,6 +102,40 @@ export const api = {
   getTranscribeStatus: (jobId) => fetch(`/api/transcribe/${jobId}`).then(json),
   cancelTranscribe: (jobId) => fetch(`/api/transcribe/${jobId}/cancel`, { method: 'POST' }).then(json),
 
+  // Text-to-speech (StyleTTS2)
+  ttsAvailable: () => fetch('/api/tts/available').then(json),
+  startTts: (body) =>
+    fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(json),
+  getTtsStatus: (jobId) => fetch(`/api/tts/${jobId}`).then(json),
+  cancelTts: (jobId) => fetch(`/api/tts/${jobId}/cancel`, { method: 'POST' }).then(json),
+  getTtsLibrary: () => fetch('/api/tts/library').then(json),
+  deleteTtsEntry: (id) => fetch(`/api/tts/library/${id}`, { method: 'DELETE' }).then(json),
+  ttsToDictionary: (id, meaning) =>
+    fetch(`/api/tts/library/${id}/to_dictionary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ meaning: meaning || '' }),
+    }).then(json),
+  ttsSegmentToDictionary: (id, fromIndex, toIndex, meaning) =>
+    fetch(`/api/tts/library/${id}/segment_to_dictionary`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ from_index: fromIndex, to_index: toIndex, meaning: meaning || '' }),
+    }).then(json),
+  ttsMediaUrl: (id) => `/api/tts/media?id=${encodeURIComponent(id)}`,
+  getTtsVoices: () => fetch('/api/tts/voices').then(json),
+  addTtsVoice: (name, file) => {
+    const fd = new FormData();
+    fd.append('name', name || '');
+    fd.append('file', file);
+    return fetch('/api/tts/voices', { method: 'POST', body: fd }).then(json);
+  },
+  deleteTtsVoice: (id) => fetch(`/api/tts/voices/${id}`, { method: 'DELETE' }).then(json),
+
   // Downloads
   startDownload: (url, quality, category, subtitles) =>
     fetch('/api/download', {
@@ -126,4 +160,38 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path, watched }),
     }).then(json),
+
+  // Live conversation (speaking-practice agent)
+  convAvailable: () => fetch('/api/conversation/available').then(json),
+  convGetSettings: () => fetch('/api/conversation/settings').then(json),
+  convSetSettings: (body) =>
+    fetch('/api/conversation/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(json),
+  convSessions: () => fetch('/api/conversation/sessions').then(json),
+  convCreateSession: () => fetch('/api/conversation/sessions', { method: 'POST' }).then(json),
+  convGetSession: (id) => fetch(`/api/conversation/sessions/${id}`).then(json),
+  convDeleteSession: (id) => fetch(`/api/conversation/sessions/${id}`, { method: 'DELETE' }).then(json),
+  convRenameSession: (id, title) =>
+    fetch(`/api/conversation/sessions/${id}/rename`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title }),
+    }).then(json),
+  convGreeting: (id) =>
+    fetch(`/api/conversation/sessions/${id}/greeting`, { method: 'POST' }).then(json),
+  convSendMessage: (id, text) =>
+    fetch(`/api/conversation/sessions/${id}/message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    }).then(json),
+  convStt: (blob, model) => {
+    const fd = new FormData();
+    fd.append('file', blob, 'clip.webm');
+    fd.append('model', model || '');
+    return fetch('/api/conversation/stt', { method: 'POST', body: fd }).then(json);
+  },
 };

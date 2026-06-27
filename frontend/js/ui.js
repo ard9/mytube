@@ -776,6 +776,171 @@ export function renderStudy() {
 /* ============================================================
    View switching
    ============================================================ */
+/* ============================================================
+   Text to speech (StyleTTS2)
+   ============================================================ */
+export function renderTtsVoices() {
+  const row = $('ttsVoiceRow');
+  if (!row) return;
+
+  const chips = (state.ttsVoices || [])
+    .map(
+      (v) => `<button class="q-btn tts-voice-chip${state.ttsVoice === v.id ? ' active' : ''}" data-voice="${esc(v.id)}">
+        ${esc(v.name)}<span class="rm-voice" data-rmvoice="${esc(v.id)}" title="Delete this voice">&#10005;</span>
+      </button>`
+    )
+    .join('');
+
+  row.innerHTML =
+    `<button class="q-btn${!state.ttsVoice ? ' active' : ''}" data-voice="">Default voice</button>` + chips;
+
+  row.querySelectorAll('[data-voice]').forEach((btn) => {
+    btn.onclick = (e) => {
+      if (e.target.classList.contains('rm-voice')) return;
+      state.ttsVoice = btn.dataset.voice;
+      renderTtsVoices();
+    };
+  });
+  row.querySelectorAll('[data-rmvoice]').forEach((x) => {
+    x.onclick = (e) => {
+      e.stopPropagation();
+      window.MyTube.deleteTtsVoice(x.dataset.rmvoice);
+    };
+  });
+}
+
+export function renderTts() {
+  renderTtsVoices();
+
+  const list = $('ttsList');
+  if (!list) return;
+  const entries = state.ttsLibrary || [];
+
+  $('ttsCount').textContent = entries.length
+    ? `${entries.length} ${entries.length === 1 ? 'clip' : 'clips'}`
+    : '';
+
+  if (!entries.length) {
+    list.innerHTML = `<div class="empty small"><div class="big">&#128266;</div>
+      <h2>No audio yet</h2>
+      <p>Type or paste some text on the left and press <b>Generate speech</b>. Your saved audio will appear here.</p></div>`;
+    return;
+  }
+
+  list.innerHTML = '';
+  entries.forEach((e) => list.appendChild(ttsCard(e)));
+}
+
+function ttsCard(e) {
+  const el = document.createElement('div');
+  el.className = 'tts-card';
+
+  const voiceTag = e.voice_name
+    ? `<span class="tag">&#127908; ${esc(e.voice_name)}</span>`
+    : '<span class="tag">Default voice</span>';
+  const dur = e.duration ? fmtDuration(e.duration) : '';
+  const downloadName = (e.title || 'audio').replace(/[^\w.-]+/g, '_').slice(0, 60) +
+    (e.file && e.file.endsWith('.mp3') ? '.mp3' : '.wav');
+  const folder = e.folder ? `<span class="tts-folder" title="${esc(e.folder)}">&#128193; ${esc(e.folder)}</span>` : '';
+  const segs = Array.isArray(e.segments) ? e.segments : [];
+  const hasSegs = segs.length > 0;
+
+  // Body: a read-along transcript when we have timed segments, else a plain preview.
+  let body;
+  if (hasSegs) {
+    const spans = segs.map((s) =>
+      `<span class="tts-seg" data-i="${s.i}" data-start="${s.start}" data-end="${s.end}">${esc(s.text)} </span>`
+    ).join('');
+    body = `
+      <div class="tts-transcript">${spans}</div>
+      <div class="tts-seg-bar" hidden>
+        <span class="tts-seg-sel"></span>
+        <button class="pill-btn ghost small" data-segplay>&#9654; From here</button>
+        <button class="pill-btn ghost small" data-segadd>&#128218;&#43; Add line to Word bank</button>
+        <button class="pill-btn ghost small" data-segclear>Clear</button>
+      </div>`;
+  } else {
+    const preview = e.text.length > 220 ? e.text.slice(0, 220) + '…' : e.text;
+    body = `<div class="tts-card-text">${esc(preview)}</div>`;
+  }
+
+  el.innerHTML = `
+    <div class="tts-card-head">
+      <div class="tts-card-title">${esc(e.title || 'Untitled')}</div>
+      <div class="tts-card-meta">${voiceTag}${dur ? `<span>${dur}</span>` : ''}<span>${e.chars} chars</span>${hasSegs ? '<span>&#128266; read-along</span>' : ''}</div>
+    </div>
+    ${body}
+    <audio class="dict-audio" controls preload="none" src="${api.ttsMediaUrl(e.id)}"></audio>
+    ${folder ? `<div class="tts-card-folder">${folder}</div>` : ''}
+    <div class="tts-card-actions">
+      <button class="pill-btn ghost small" data-add>&#128218;&#43; Add whole text</button>
+      <a class="pill-btn ghost small" href="${api.ttsMediaUrl(e.id)}" download="${esc(downloadName)}">&#8595; Download</a>
+      <button class="pill-btn ghost small danger" data-del>Delete</button>
+    </div>`;
+
+  el.querySelector('[data-add]').onclick = () => window.MyTube.ttsToFlashcards(e);
+  el.querySelector('[data-del]').onclick = () => window.MyTube.deleteTtsEntry(e);
+  if (hasSegs) wireReadAlong(el, e, segs);
+  return el;
+}
+
+function wireReadAlong(card, entry, segs) {
+  const audio = card.querySelector('audio');
+  const spans = Array.from(card.querySelectorAll('.tts-seg'));
+  const bar = card.querySelector('.tts-seg-bar');
+  const sel = card.querySelector('.tts-seg-sel');
+  let selected = -1;       // index of the sentence chosen for adding
+  let reading = -1;        // index currently being spoken
+
+  // Karaoke highlight: follow playback and light up the active sentence.
+  audio.addEventListener('timeupdate', () => {
+    const t = audio.currentTime;
+    let cur = -1;
+    for (let k = 0; k < segs.length; k++) {
+      if (t >= segs[k].start && t < segs[k].end) { cur = k; break; }
+      if (t >= segs[k].start) cur = k;   // during a gap, keep the last spoken one lit
+    }
+    if (cur !== reading) {
+      if (reading >= 0 && spans[reading]) spans[reading].classList.remove('reading');
+      if (cur >= 0 && spans[cur]) {
+        spans[cur].classList.add('reading');
+        spans[cur].scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+      reading = cur;
+    }
+  });
+  audio.addEventListener('ended', () => {
+    if (reading >= 0 && spans[reading]) spans[reading].classList.remove('reading');
+    reading = -1;
+  });
+
+  function selectSeg(i) {
+    if (selected >= 0 && spans[selected]) spans[selected].classList.remove('selected');
+    selected = i;
+    spans[i].classList.add('selected');
+    const text = segs[i].text;
+    sel.textContent = text.length > 70 ? text.slice(0, 70) + '…' : text;
+    bar.hidden = false;
+  }
+  function clearSel() {
+    if (selected >= 0 && spans[selected]) spans[selected].classList.remove('selected');
+    selected = -1;
+    bar.hidden = true;
+  }
+
+  spans.forEach((sp, i) => { sp.onclick = () => selectSeg(i); });
+  bar.querySelector('[data-segplay]').onclick = () => {
+    if (selected < 0) return;
+    audio.currentTime = segs[selected].start + 0.001;
+    audio.play();
+  };
+  bar.querySelector('[data-segadd]').onclick = () => {
+    if (selected < 0) return;
+    window.MyTube.ttsAddSegment(entry, selected);
+  };
+  bar.querySelector('[data-segclear]').onclick = clearSel;
+}
+
 export function showView(name) {
   document.querySelectorAll('.view').forEach((v) => v.classList.remove('active'));
   $(`view-${name}`).classList.add('active');

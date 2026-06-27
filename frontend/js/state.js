@@ -26,6 +26,12 @@ export const state = {
   dictStatus: 'all',     // all | due | new | learning | mastered
   dictStats: null,       // {due, new, learning, review, mastered, streak, ...}
 
+  // text-to-speech (StyleTTS2)
+  ttsLibrary: [],        // [{id, title, text, file, duration, voice_name, created}]  newest first
+  ttsVoices: [],         // [{id, name, file, created}]  saved reference voices for cloning
+  ttsAvailable: null,    // {available, ffmpeg, max_chars} | null (not checked yet)
+  ttsVoice: '',          // selected voice id for the composer ('' = built-in default)
+
   // study session (spaced repetition)
   study: {
     active: false,

@@ -32,6 +32,7 @@ DEFAULTS = {
     "library_path": r"D:\English\youtube_english",
     "ytdlp_bin": "yt-dlp",
     "default_quality": "720",
+    "tts_output_dir": "",          # "" = default (<project>/tts_media); else a folder of your choice
     "host": "127.0.0.1",
     "port": 8420,
 }
@@ -62,6 +63,15 @@ def save_config(updates: dict) -> dict:
 def get_library_path() -> Path:
     """Return the configured library directory as a Path (may not exist yet)."""
     return Path(load_config()["library_path"]).expanduser()
+
+
+def get_tts_output_dir() -> Path | None:
+    """
+    The folder where generated speech is saved. Returns None when the user hasn't
+    set one (callers then use the built-in default, <project>/tts_media).
+    """
+    raw = (load_config().get("tts_output_dir") or "").strip()
+    return Path(raw).expanduser() if raw else None
 
 
 def setup_logging() -> None:

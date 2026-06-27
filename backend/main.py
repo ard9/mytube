@@ -29,12 +29,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import config
+import conversation
 import dictionary
 import downloader
 import library
 import notes
 import progress
 import transcribe
+import tts
 
 config.setup_logging()
 log = logging.getLogger("mytube.main")
@@ -113,6 +115,7 @@ class ConfigUpdate(BaseModel):
     library_path: str | None = None
     ytdlp_bin: str | None = None
     default_quality: str | None = None
+    tts_output_dir: str | None = None
 
 
 class NoteUpdate(BaseModel):
@@ -172,6 +175,51 @@ class TranscribeRequest(BaseModel):
     model: str = ""         # "" = use default size
     translate: bool = False  # True = translate speech to English subtitles
     model_path: str = ""    # "" = auto-download by name; else a local folder with a pre-downloaded model
+
+
+class TTSRequest(BaseModel):
+    text: str
+    title: str = ""
+    voice_id: str = ""               # "" = built-in default voice; else a saved voice id
+    diffusion_steps: int = 5         # quality vs. speed (more = slower, more varied)
+    embedding_scale: float = 1.0     # expressiveness (higher = more emotional)
+    alpha: float = 0.3               # timbre blend toward the text vs. the reference voice
+    beta: float = 0.7                # prosody blend toward the text vs. the reference voice
+
+
+class ConversationSettings(BaseModel):
+    provider: str | None = None
+    openrouter_key: str | None = None
+    openrouter_model: str | None = None
+    gemini_key: str | None = None
+    gemini_model: str | None = None
+    openai_key: str | None = None
+    openai_base_url: str | None = None
+    openai_model: str | None = None
+    temperature: float | None = None
+    voice_mode: str | None = None
+    stt_mode: str | None = None
+    whisper_model: str | None = None
+    level: str | None = None
+    explain_language: str | None = None
+
+
+class ConversationMessage(BaseModel):
+    text: str
+
+
+class ConversationRename(BaseModel):
+    title: str
+
+
+class TTSToDictRequest(BaseModel):
+    meaning: str = ""
+
+
+class TTSSegmentToDict(BaseModel):
+    from_index: int = 0
+    to_index: int = 0
+    meaning: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -372,6 +420,148 @@ def api_transcribe_cancel(job_id: str):
 
 
 # --------------------------------------------------------------------------- #
+# Text-to-speech (StyleTTS2, offline, English)
+# --------------------------------------------------------------------------- #
+@app.get("/api/tts/available")
+def api_tts_available():
+    return {
+        "available": tts.is_available(),
+        "ffmpeg": tts.ffmpeg_available(),
+        "max_chars": tts.MAX_TEXT_CHARS,
+    }
+
+
+@app.post("/api/tts")
+def api_tts_start(req: TTSRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    if not tts.is_available():
+        raise HTTPException(
+            status_code=503,
+            detail="StyleTTS2 is not installed on the server. "
+                   "Run 'pip install styletts2' and restart Echo.",
+        )
+    opts = {
+        "diffusion_steps": req.diffusion_steps,
+        "embedding_scale": req.embedding_scale,
+        "alpha": req.alpha,
+        "beta": req.beta,
+    }
+    return tts.start_job(req.text, req.title, req.voice_id, opts)
+
+
+@app.get("/api/tts/jobs")
+def api_tts_jobs():
+    return tts.list_jobs()
+
+
+@app.get("/api/tts/library")
+def api_tts_library():
+    return {"entries": tts.get_library(), "ffmpeg": tts.ffmpeg_available()}
+
+
+@app.delete("/api/tts/library/{entry_id}")
+def api_tts_delete(entry_id: str):
+    return {"deleted": tts.delete_entry(entry_id)}
+
+
+@app.post("/api/tts/library/{entry_id}/to_dictionary")
+def api_tts_to_dictionary(entry_id: str, req: TTSToDictRequest):
+    """Create a Word bank flashcard from a generated audio, with the audio attached."""
+    entry = tts.get_entry(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    media = tts.entry_file_path(entry)
+    if not media:
+        raise HTTPException(status_code=404, detail="Audio file missing on disk")
+
+    created = dictionary.add_entry(entry["text"], req.meaning)
+    try:
+        with open(media, "rb") as f:
+            updated = dictionary.attach_media(created["id"], "audio", f, media.name)
+        return updated
+    except Exception as exc:  # noqa: BLE001
+        # The text entry still exists even if attaching the clip failed.
+        return {**created, "_warning": f"Saved the text, but the audio couldn't be attached: {exc}"}
+
+
+@app.post("/api/tts/library/{entry_id}/segment_to_dictionary")
+def api_tts_segment_to_dict(entry_id: str, req: TTSSegmentToDict):
+    """Cut one sentence-range out of a generated clip and save it as a Word bank card."""
+    entry = tts.get_entry(entry_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    segs = entry.get("segments") or []
+    if not segs:
+        raise HTTPException(status_code=400, detail="This clip has no timed segments")
+
+    fi = max(0, min(req.from_index, len(segs) - 1))
+    ti = max(fi, min(req.to_index, len(segs) - 1))
+    start = segs[fi]["start"]
+    end = segs[ti]["end"]
+    text = " ".join(s["text"] for s in segs[fi:ti + 1]).strip()
+
+    created = dictionary.add_entry(text, req.meaning)
+    clip = tts.cut_clip(entry, start, end)
+    if not clip:
+        log.warning("segment_to_dictionary: could not cut audio for entry %s (%.2f-%.2f)", entry_id, start, end)
+        return {**created, "_warning": "Saved the text, but couldn't cut the audio clip. Check that ffmpeg is installed and see the server console for details."}
+    try:
+        with open(clip, "rb") as f:
+            updated = dictionary.attach_media(created["id"], "audio", f, f"segment{clip.suffix}")
+        return updated
+    except Exception as exc:  # noqa: BLE001
+        return {**created, "_warning": f"Saved the text, but the audio clip couldn't be attached: {exc}"}
+    finally:
+        try:
+            clip.unlink()
+        except OSError:
+            pass
+
+
+@app.get("/api/tts/media")
+def api_tts_media(id: str):
+    p = tts.media_path(id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Audio not found")
+    return FileResponse(p, media_type=mimetypes.guess_type(str(p))[0] or "audio/mpeg")
+
+
+# ----- saved reference voices (for cloning) ----- #
+@app.get("/api/tts/voices")
+def api_tts_voices():
+    return {"voices": tts.get_voices()}
+
+
+@app.post("/api/tts/voices")
+def api_tts_add_voice(name: str = Form(""), file: UploadFile = File(...)):
+    try:
+        return tts.add_voice(name, file.file, file.filename or "")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/tts/voices/{voice_id}")
+def api_tts_delete_voice(voice_id: str):
+    return {"deleted": tts.delete_voice(voice_id)}
+
+
+# These {job_id} routes come last so the static paths above (jobs, library,
+# media, voices) aren't swallowed by the {job_id} placeholder.
+@app.get("/api/tts/{job_id}")
+def api_tts_status(job_id: str):
+    job = tts.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/api/tts/{job_id}/cancel")
+def api_tts_cancel(job_id: str):
+    return {"cancelled": tts.cancel_job(job_id)}
+
+
+# --------------------------------------------------------------------------- #
 # Notes
 # --------------------------------------------------------------------------- #
 @app.get("/api/notes")
@@ -526,6 +716,106 @@ def api_download_status(job_id: str):
 @app.post("/api/downloads/{job_id}/cancel")
 def api_download_cancel(job_id: str):
     return {"cancelled": downloader.cancel_job(job_id)}
+
+
+# --------------------------------------------------------------------------- #
+# Live conversation (speaking-practice agent)
+# --------------------------------------------------------------------------- #
+@app.get("/api/conversation/available")
+def api_conversation_available():
+    return {
+        "whisper": conversation.whisper_available(),
+        "styletts": tts.is_available(),
+        "providers": ["openrouter", "gemini", "openai"],
+    }
+
+
+@app.get("/api/conversation/settings")
+def api_conversation_get_settings():
+    return conversation.public_settings()
+
+
+@app.post("/api/conversation/settings")
+def api_conversation_set_settings(update: ConversationSettings):
+    conversation.save_settings(update.model_dump(exclude_none=True))
+    return conversation.public_settings()
+
+
+@app.get("/api/conversation/sessions")
+def api_conversation_sessions():
+    return {"sessions": conversation.list_sessions()}
+
+
+@app.post("/api/conversation/sessions")
+def api_conversation_create():
+    return conversation.create_session()
+
+
+@app.get("/api/conversation/sessions/{session_id}")
+def api_conversation_get(session_id: str):
+    s = conversation.get_session(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return s
+
+
+@app.delete("/api/conversation/sessions/{session_id}")
+def api_conversation_delete(session_id: str):
+    return {"deleted": conversation.delete_session(session_id)}
+
+
+@app.post("/api/conversation/sessions/{session_id}/rename")
+def api_conversation_rename(session_id: str, req: ConversationRename):
+    s = conversation.rename_session(session_id, req.title)
+    if not s:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return s
+
+
+@app.post("/api/conversation/sessions/{session_id}/greeting")
+def api_conversation_greeting(session_id: str):
+    try:
+        return conversation.start_greeting(session_id)
+    except conversation.LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@app.post("/api/conversation/sessions/{session_id}/message")
+def api_conversation_message(session_id: str, req: ConversationMessage):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Message is empty")
+    try:
+        return conversation.send_message(session_id, req.text)
+    except conversation.LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/conversation/stt")
+def api_conversation_stt(file: UploadFile = File(...), model: str = Form("")):
+    """Transcribe a short recorded clip with Whisper (browser STT needs no server call)."""
+    if not conversation.whisper_available():
+        raise HTTPException(
+            status_code=503,
+            detail="faster-whisper is not installed. Run 'pip install faster-whisper' "
+                   "or switch the input mode to the browser's speech recognition.",
+        )
+    import tempfile
+    suffix = Path(file.filename or "clip.webm").suffix or ".webm"
+    tmp = Path(tempfile.gettempdir()) / f"echo_stt_{os.getpid()}_{id(file)}{suffix}"
+    try:
+        with open(tmp, "wb") as out:
+            out.write(file.file.read())
+        text = conversation.transcribe_audio(tmp, model_size=model)
+        return {"text": text}
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    finally:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
 
 
 # --------------------------------------------------------------------------- #
