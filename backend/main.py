@@ -196,12 +196,25 @@ class ConversationSettings(BaseModel):
     openai_key: str | None = None
     openai_base_url: str | None = None
     openai_model: str | None = None
+    ollama_base_url: str | None = None
+    ollama_model: str | None = None
     temperature: float | None = None
+    proxy: str | None = None
     voice_mode: str | None = None
     stt_mode: str | None = None
     whisper_model: str | None = None
+    whisper_partial_model: str | None = None
+    whisper_device: str | None = None
+    whisper_compute: str | None = None
     level: str | None = None
     explain_language: str | None = None
+    vad_silence_ms: int | None = None
+    vad_sensitivity: float | None = None
+
+
+class OllamaPull(BaseModel):
+    model: str
+    base_url: str = ""
 
 
 class ConversationMessage(BaseModel):
@@ -726,8 +739,33 @@ def api_conversation_available():
     return {
         "whisper": conversation.whisper_available(),
         "styletts": tts.is_available(),
-        "providers": ["openrouter", "gemini", "openai"],
+        "providers": ["openrouter", "gemini", "openai", "ollama"],
     }
+
+
+@app.get("/api/conversation/whisper_info")
+def api_conversation_whisper_info():
+    return conversation.whisper_info()
+
+
+@app.get("/api/conversation/ollama/status")
+def api_ollama_status(base_url: str = ""):
+    return conversation.ollama_status(base_url)
+
+
+@app.post("/api/conversation/ollama/pull")
+def api_ollama_pull(req: OllamaPull):
+    if not req.model.strip():
+        raise HTTPException(status_code=400, detail="Model name is required")
+    return conversation.start_pull(req.model.strip(), req.base_url)
+
+
+@app.get("/api/conversation/ollama/pull/{job_id}")
+def api_ollama_pull_status(job_id: str):
+    job = conversation.get_pull(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Pull job not found")
+    return job
 
 
 @app.get("/api/conversation/settings")
@@ -793,8 +831,9 @@ def api_conversation_message(session_id: str, req: ConversationMessage):
 
 
 @app.post("/api/conversation/stt")
-def api_conversation_stt(file: UploadFile = File(...), model: str = Form("")):
-    """Transcribe a short recorded clip with Whisper (browser STT needs no server call)."""
+def api_conversation_stt(file: UploadFile = File(...), model: str = Form(""),
+                         vad_filter: str = Form("true"), partial: str = Form("false")):
+    """Transcribe a clip with Whisper. `partial=true` is the fast live-streaming path."""
     if not conversation.whisper_available():
         raise HTTPException(
             status_code=503,
@@ -807,7 +846,11 @@ def api_conversation_stt(file: UploadFile = File(...), model: str = Form("")):
     try:
         with open(tmp, "wb") as out:
             out.write(file.file.read())
-        text = conversation.transcribe_audio(tmp, model_size=model)
+        text = conversation.transcribe_audio(
+            tmp, model_size=model,
+            vad_filter=(vad_filter.lower() != "false"),
+            partial=(partial.lower() == "true"),
+        )
         return {"text": text}
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc))

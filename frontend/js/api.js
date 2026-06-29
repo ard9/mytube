@@ -9,6 +9,21 @@ async function json(res) {
   return res.json();
 }
 
+// fetch with an abort timeout so a hung AI provider surfaces an error
+// instead of leaving the UI spinning forever.
+function fetchT(url, opts, ms) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms || 90000);
+  return fetch(url, { ...(opts || {}), signal: ctrl.signal })
+    .catch((e) => {
+      if (e.name === 'AbortError') {
+        throw new Error('The tutor took too long to respond. Check your AI provider / connection in AI settings.');
+      }
+      throw e;
+    })
+    .finally(() => clearTimeout(id));
+}
+
 export const api = {
   // Config
   getConfig: () => fetch('/api/config').then(json),
@@ -163,6 +178,7 @@ export const api = {
 
   // Live conversation (speaking-practice agent)
   convAvailable: () => fetch('/api/conversation/available').then(json),
+  convWhisperInfo: () => fetch('/api/conversation/whisper_info').then(json),
   convGetSettings: () => fetch('/api/conversation/settings').then(json),
   convSetSettings: (body) =>
     fetch('/api/conversation/settings', {
@@ -181,17 +197,28 @@ export const api = {
       body: JSON.stringify({ title }),
     }).then(json),
   convGreeting: (id) =>
-    fetch(`/api/conversation/sessions/${id}/greeting`, { method: 'POST' }).then(json),
+    fetchT(`/api/conversation/sessions/${id}/greeting`, { method: 'POST' }, 90000).then(json),
   convSendMessage: (id, text) =>
-    fetch(`/api/conversation/sessions/${id}/message`, {
+    fetchT(`/api/conversation/sessions/${id}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
-    }).then(json),
-  convStt: (blob, model) => {
+    }, 90000).then(json),
+  convStt: (blob, model, vadFilter, partial) => {
     const fd = new FormData();
-    fd.append('file', blob, 'clip.webm');
+    fd.append('file', blob, blob.type && blob.type.includes('wav') ? 'clip.wav' : 'clip.webm');
     fd.append('model', model || '');
+    fd.append('vad_filter', vadFilter === false ? 'false' : 'true');
+    fd.append('partial', partial ? 'true' : 'false');
     return fetch('/api/conversation/stt', { method: 'POST', body: fd }).then(json);
   },
+  ollamaStatus: (baseUrl) =>
+    fetch(`/api/conversation/ollama/status?base_url=${encodeURIComponent(baseUrl || '')}`).then(json),
+  ollamaPull: (model, baseUrl) =>
+    fetch('/api/conversation/ollama/pull', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, base_url: baseUrl || '' }),
+    }).then(json),
+  ollamaPullStatus: (jobId) => fetch(`/api/conversation/ollama/pull/${jobId}`).then(json),
 };

@@ -71,13 +71,21 @@ DEFAULT_SETTINGS = {
     "openai_key": "",
     "openai_base_url": "https://api.openai.com/v1",
     "openai_model": "gpt-4o-mini",
+    "ollama_base_url": "http://127.0.0.1:11434",
+    "ollama_model": "llama3.2:3b",
     "temperature": 0.7,
+    "proxy": "",                         # optional HTTP proxy, e.g. http://127.0.0.1:10809
     # learner preferences (defaults; the UI can override per request)
     "voice_mode": "browser",             # browser | styletts2
     "stt_mode": "browser",               # browser | whisper
     "whisper_model": "base",             # tiny | base | small | medium | large-v3
+    "whisper_partial_model": "tiny",     # fast model used only for live partials
+    "whisper_device": "auto",            # auto | cuda | cpu
+    "whisper_compute": "auto",           # auto | float16 | int8_float16 | int8
     "level": "auto",                     # auto | beginner | intermediate | advanced
     "explain_language": "Persian",       # language used to explain corrections
+    "vad_silence_ms": 800,               # hands-free: pause before auto-send
+    "vad_sensitivity": 0.5,              # hands-free: 0..1 (higher = more sensitive)
 }
 
 
@@ -175,14 +183,30 @@ class LLMError(RuntimeError):
     pass
 
 
-def _http_post_json(url: str, payload: dict, headers: dict, timeout: int = 90) -> dict:
+def _http_post_json(url: str, payload: dict, headers: dict, timeout: int = 90,
+                    proxy: str = "", direct: bool = False) -> dict:
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
     for k, v in headers.items():
         req.add_header(k, v)
+
+    # `direct` forces a no-proxy connection (used for local Ollama, which must
+    # never be routed through a VPN/proxy). Otherwise: an explicit proxy is used
+    # when set, and an empty proxy lets urllib fall back to the OS/system proxy.
+    if direct:
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        do_open = opener.open
+    elif proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        )
+        do_open = opener.open
+    else:
+        do_open = urllib.request.urlopen
+
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with do_open(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -195,7 +219,19 @@ def _http_post_json(url: str, payload: dict, headers: dict, timeout: int = 90) -
         msg = _extract_api_error(detail) or f"HTTP {exc.code} {exc.reason}"
         raise LLMError(msg) from exc
     except urllib.error.URLError as exc:
-        raise LLMError(f"Could not reach the AI provider: {exc.reason}") from exc
+        reason = str(getattr(exc, "reason", exc))
+        if "refused" in reason.lower() or "10061" in reason:
+            raise LLMError(
+                "Could not connect to the local model server. Is Ollama running? "
+                "Install it from ollama.com and start it (or run 'ollama serve')."
+            ) from exc
+        if "getaddrinfo" in reason or "Name or service" in reason or "Temporary failure" in reason:
+            raise LLMError(
+                "Could not resolve the AI provider's address — the server has no working "
+                "internet route to it (often DNS filtering). Turn on your VPN/proxy in "
+                "system-wide / TUN mode, or set a Proxy in AI settings, then try again."
+            ) from exc
+        raise LLMError(f"Could not reach the AI provider: {reason}") from exc
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -218,7 +254,8 @@ def _extract_api_error(raw: str) -> str:
     return raw[:300]
 
 
-def _openai_style_chat(messages: list[dict], settings: dict, base_url: str, key: str, model: str) -> str:
+def _openai_style_chat(messages: list[dict], settings: dict, base_url: str, key: str,
+                       model: str, force_direct: bool = False) -> str:
     if not key:
         raise LLMError("No API key set for this provider. Add one in the AI settings.")
     if not model:
@@ -234,7 +271,8 @@ def _openai_style_chat(messages: list[dict], settings: dict, base_url: str, key:
     if "openrouter.ai" in base_url:
         headers["HTTP-Referer"] = "http://localhost"
         headers["X-Title"] = "Echo"
-    data = _http_post_json(url, payload, headers)
+    data = _http_post_json(url, payload, headers,
+                          proxy=settings.get("proxy", ""), direct=force_direct)
     try:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
@@ -273,7 +311,7 @@ def _gemini_chat(messages: list[dict], settings: dict, key: str, model: str) -> 
     if system_text:
         payload["system_instruction"] = {"parts": [{"text": system_text}]}
 
-    data = _http_post_json(url, payload, headers={})
+    data = _http_post_json(url, payload, headers={}, proxy=settings.get("proxy", ""))
     try:
         cands = data.get("candidates") or []
         parts = cands[0]["content"]["parts"]
@@ -301,6 +339,14 @@ def chat_complete(messages: list[dict], settings: dict | None = None) -> str:
             settings.get("openai_key", ""),
             settings.get("openai_model", ""),
         )
+    if provider == "ollama":
+        base = _ollama_base(settings) + "/v1"
+        if not settings.get("ollama_model"):
+            raise LLMError("No Ollama model set. Choose or download one in the AI settings.")
+        return _openai_style_chat(
+            messages, settings, base, "ollama",
+            settings.get("ollama_model", ""), force_direct=True,
+        )
     # default: openrouter
     return _openai_style_chat(
         messages, settings,
@@ -311,8 +357,112 @@ def chat_complete(messages: list[dict], settings: dict | None = None) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Parsing the tutor's JSON reply (defensively — free models aren't perfect)
+# Local models via Ollama (auto-download by name, runs on the user's GPU)
 # --------------------------------------------------------------------------- #
+def _ollama_base(settings: dict | None = None) -> str:
+    settings = settings or load_settings()
+    return (settings.get("ollama_base_url") or "http://127.0.0.1:11434").rstrip("/")
+
+
+def _local_get(url: str, timeout: int = 5):
+    """GET a localhost URL, always bypassing any proxy."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(urllib.request.Request(url), timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", errors="replace"))
+
+
+def ollama_status(base_url: str = "") -> dict:
+    """Is Ollama reachable, and which models are already installed?"""
+    base = (base_url or _ollama_base()).rstrip("/")
+    try:
+        data = _local_get(base + "/api/tags", timeout=4)
+        models = [
+            {"name": m.get("name", ""), "size": m.get("size", 0)}
+            for m in (data.get("models") or [])
+        ]
+        models.sort(key=lambda m: m["name"])
+        return {"running": True, "base_url": base, "models": models}
+    except Exception as exc:  # noqa: BLE001
+        return {"running": False, "base_url": base, "models": [], "error": str(exc)}
+
+
+# pull (download) jobs --------------------------------------------------------
+_pull_jobs: dict[str, dict] = {}
+_pull_lock = threading.Lock()
+
+
+def start_pull(model: str, base_url: str = "") -> dict:
+    base = (base_url or _ollama_base()).rstrip("/")
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        "id": job_id, "model": model, "status": "starting",
+        "percent": 0.0, "detail": "", "error": "",
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    with _pull_lock:
+        _pull_jobs[job_id] = job
+    threading.Thread(target=_run_pull, args=(job, base, model), daemon=True).start()
+    return job
+
+
+def _run_pull(job: dict, base: str, model: str) -> None:
+    try:
+        payload = json.dumps({"name": model, "stream": True}).encode("utf-8")
+        req = urllib.request.Request(base + "/api/pull", data=payload, method="POST")
+        req.add_header("Content-Type", "application/json")
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with _pull_lock:
+            job["status"] = "running"
+        # Ollama streams newline-delimited JSON progress events.
+        with opener.open(req, timeout=3600) as resp:
+            for raw_line in resp:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line.decode("utf-8", errors="replace"))
+                except json.JSONDecodeError:
+                    continue
+                status = ev.get("status", "")
+                total = ev.get("total")
+                completed = ev.get("completed")
+                with _pull_lock:
+                    if status:
+                        job["detail"] = status
+                    if total and completed:
+                        job["percent"] = round(completed / total * 100, 1)
+                    if ev.get("error"):
+                        job["status"] = "error"
+                        job["error"] = ev["error"]
+                    if status == "success":
+                        job["status"] = "done"
+                        job["percent"] = 100.0
+        with _pull_lock:
+            if job["status"] not in ("error", "done"):
+                job["status"] = "done"
+                job["percent"] = 100.0
+    except urllib.error.URLError as exc:
+        reason = str(getattr(exc, "reason", exc))
+        with _pull_lock:
+            job["status"] = "error"
+            if "refused" in reason.lower() or "10061" in reason:
+                job["error"] = ("Could not connect to Ollama. Install it from ollama.com "
+                                "and make sure it's running.")
+            else:
+                job["error"] = reason
+    except Exception as exc:  # noqa: BLE001
+        with _pull_lock:
+            job["status"] = "error"
+            job["error"] = str(exc)
+
+
+def get_pull(job_id: str) -> dict | None:
+    with _pull_lock:
+        job = _pull_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+
 def _parse_tutor_reply(raw: str) -> dict:
     text = (raw or "").strip()
     if not text:
@@ -541,43 +691,110 @@ def start_greeting(session_id: str) -> dict:
 # --------------------------------------------------------------------------- #
 _whisper_cache: dict[str, object] = {}
 _whisper_lock = threading.Lock()
+_whisper_device_used: str | None = None
+
+
+_whisper_available_cache: bool | None = None
 
 
 def whisper_available() -> bool:
+    global _whisper_available_cache
+    if _whisper_available_cache is None:
+        try:
+            import faster_whisper  # noqa: F401
+            _whisper_available_cache = True
+        except ImportError:
+            _whisper_available_cache = False
+    return _whisper_available_cache
+
+
+def cuda_available() -> bool:
+    """True if ctranslate2 can see a CUDA GPU (this is what faster-whisper uses)."""
     try:
-        import faster_whisper  # noqa: F401
-        return True
-    except ImportError:
+        import ctranslate2
+        return ctranslate2.get_cuda_device_count() > 0
+    except Exception:  # noqa: BLE001
         return False
 
 
+def _resolve_device(settings: dict) -> tuple[str, str]:
+    dev = (settings.get("whisper_device") or "auto").lower()
+    comp = (settings.get("whisper_compute") or "auto").lower()
+    if dev == "auto":
+        if cuda_available():
+            dev = "cuda"
+            comp = "float16" if comp == "auto" else comp
+        else:
+            dev = "cpu"
+            comp = "int8" if comp == "auto" else comp
+    elif comp == "auto":
+        comp = "float16" if dev == "cuda" else "int8"
+    return dev, comp
+
+
 def _get_whisper(model_size: str):
-    model_size = model_size or "base"
+    settings = load_settings()
+    model_size = model_size or settings.get("whisper_model", "base")
+    dev, comp = _resolve_device(settings)
+    key = f"{model_size}|{dev}|{comp}"
+    global _whisper_device_used
     with _whisper_lock:
-        if model_size not in _whisper_cache:
+        if key not in _whisper_cache:
             from faster_whisper import WhisperModel
-            log.info("Loading Whisper '%s' for live speech-to-text…", model_size)
             try:
-                m = WhisperModel(model_size, device="auto", compute_type="auto")
+                log.info("Loading Whisper '%s' on %s (%s)…", model_size, dev, comp)
+                m = WhisperModel(model_size, device=dev, compute_type=comp)
+                _whisper_device_used = dev
+                log.info("Whisper '%s' ready on %s.", model_size, dev)
             except Exception as exc:  # noqa: BLE001
-                log.warning("Whisper GPU load failed (%s); using CPU.", exc)
+                log.warning(
+                    "Whisper '%s' failed to load on %s (%s). Falling back to CPU (int8) — "
+                    "this is much slower. For GPU, install CUDA libs: "
+                    "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12",
+                    model_size, dev, exc,
+                )
                 m = WhisperModel(model_size, device="cpu", compute_type="int8")
-            _whisper_cache[model_size] = m
-        return _whisper_cache[model_size]
+                _whisper_device_used = "cpu"
+            _whisper_cache[key] = m
+        return _whisper_cache[key]
 
 
-def transcribe_audio(file_path: Path, model_size: str = "", language: str = "en") -> str:
-    """Transcribe a short recorded clip to text. Raises RuntimeError if unavailable."""
+def whisper_info() -> dict:
+    s = load_settings()
+    dev, comp = _resolve_device(s)
+    return {
+        "available": whisper_available(),
+        "cuda": cuda_available(),
+        "device": _whisper_device_used or dev,    # actual once loaded, else resolved
+        "compute": comp,
+        "model": s.get("whisper_model", "base"),
+        "partial_model": s.get("whisper_partial_model", "tiny"),
+        "loaded": _whisper_device_used is not None,
+    }
+
+
+def transcribe_audio(file_path: Path, model_size: str = "", language: str = "en",
+                     vad_filter: bool = True, partial: bool = False) -> str:
+    """Transcribe a clip to text. `partial` uses a fast model + settings for live streaming."""
     if not whisper_available():
         raise RuntimeError(
             "faster-whisper is not installed on the server. "
             "Run 'pip install faster-whisper' or use the browser's speech recognition instead."
         )
     settings = load_settings()
-    model = _get_whisper(model_size or settings.get("whisper_model", "base"))
-    segments, _info = model.transcribe(
-        str(file_path),
+    if partial:
+        size = settings.get("whisper_partial_model") or "tiny"
+    else:
+        size = model_size or settings.get("whisper_model", "base")
+    model = _get_whisper(size)
+    kwargs = dict(
         language=language or None,
-        vad_filter=True,
+        vad_filter=vad_filter,
+        beam_size=1 if partial else 5,
+        condition_on_previous_text=False,
     )
+    if partial:
+        kwargs["best_of"] = 1
+        kwargs["temperature"] = 0.0
+    segments, _info = model.transcribe(str(file_path), **kwargs)
     return " ".join((seg.text or "").strip() for seg in segments).strip()

@@ -41,6 +41,16 @@ library, and lets you download whole channels with `yt-dlp` from the browser.
   **OpenRouter**, **Gemini**, or **any OpenAI-compatible** endpoint — no key is
   ever hard-coded, and keys are stored only on your machine. Pick your level
   (auto / beginner / intermediate / advanced) too.
+- **Hands-free voice-to-voice mode.** Press **Voice-to-voice** and just talk —
+  a voice-activity detector (VAD) notices when you start and stop speaking, so
+  there are no buttons to press. When you pause (~0.8s by default, adjustable),
+  your words are sent automatically, the tutor replies out loud, and if you start
+  talking again while it's speaking it stops instantly and listens (barge-in). In
+  **Whisper** input this runs as a live stream: your speech is transcribed every
+  second and shown as it forms, then finalized on the pause. Headphones are
+  recommended to avoid the mic hearing the tutor. A live mic meter, an
+  end-of-speech "pause" control, and a sensitivity slider are right there in the
+  composer.
 
 
 **Text to speech (StyleTTS2, offline, English)**

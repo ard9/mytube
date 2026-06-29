@@ -20,7 +20,7 @@
   </div>
 
   <div class="search-wrap">
-    <input type="text" id="search" placeholder="Search your videos">
+    <input type="text" id="search" placeholder="Search your videos" autocomplete="off" autocapitalize="off" spellcheck="false">
     <button id="searchBtn" aria-label="Search">&#9906;</button>
     <button id="subSearchToggle" class="sub-toggle" title="Also search inside captions/subtitles">CC</button>
   </div>
@@ -386,6 +386,23 @@
 
         <!-- Composer -->
         <div class="conv-composer">
+          <div class="conv-v2v-row">
+            <button class="conv-v2v-btn" id="convV2vBtn"><span class="conv-v2v-ico">&#127908;</span> Voice-to-voice: <b>off</b></button>
+            <div class="conv-v2v-panel" id="convV2vPanel" hidden>
+              <div class="conv-v2v-state"><span class="conv-v2v-orb" id="convV2vOrb"></span><span id="convV2vLabel">Idle</span></div>
+              <div class="conv-v2v-meter"><div class="conv-v2v-meter-fill" id="convV2vMeterFill"></div></div>
+              <div class="conv-seg" id="convV2vPauseSeg" title="Pause length before it auto-sends">
+                <span class="conv-seg-label">Pause:</span>
+                <button class="conv-seg-btn active" data-pause="800">Tight</button>
+                <button class="conv-seg-btn" data-pause="1200">Medium</button>
+                <button class="conv-seg-btn" data-pause="1800">Patient</button>
+              </div>
+              <label class="conv-v2v-sens" title="Mic sensitivity">Sensitivity
+                <input type="range" id="convV2vSens" min="0" max="100" value="50">
+              </label>
+            </div>
+          </div>
+
           <div class="conv-mode-row">
             <div class="conv-seg" id="convSttSeg" title="How your speech becomes text">
               <span class="conv-seg-label">Input:</span>
@@ -426,6 +443,7 @@
             <button class="q-btn active" data-provider="openrouter">OpenRouter</button>
             <button class="q-btn" data-provider="gemini">Gemini</button>
             <button class="q-btn" data-provider="openai">OpenAI-compatible</button>
+            <button class="q-btn" data-provider="ollama">Local (Ollama)</button>
           </div>
 
           <!-- OpenRouter -->
@@ -457,6 +475,40 @@
             <p class="hint">Works with any OpenAI-compatible endpoint (Groq, Together, local servers, etc.).</p>
           </div>
 
+          <!-- Local (Ollama) -->
+          <div class="conv-provider-pane" data-pane="ollama" hidden>
+            <div class="conv-ollama-status" id="convOllamaStatus">
+              <span class="conv-dot"></span><span id="convOllamaStatusText">Checking Ollama…</span>
+            </div>
+            <p class="hint">Runs a model fully offline on your own GPU — no key, no internet, nothing to filter. Install Ollama once from <strong>ollama.com</strong>, then download a model below.</p>
+
+            <label class="field-label">Model name</label>
+            <input type="text" id="convOllamaModel" class="text-input" placeholder="llama3.2:3b">
+
+            <label class="field-label">Suggested models <span class="muted">(pick one that fits your VRAM)</span></label>
+            <div class="conv-model-chips" id="convOllamaSuggest">
+              <button class="conv-modelchip" data-model="llama3.2:1b">llama3.2:1b <span>~1.3GB</span></button>
+              <button class="conv-modelchip" data-model="llama3.2:3b">llama3.2:3b <span>~2GB</span></button>
+              <button class="conv-modelchip" data-model="qwen2.5:3b">qwen2.5:3b <span>~2GB</span></button>
+              <button class="conv-modelchip" data-model="gemma2:2b">gemma2:2b <span>~1.6GB</span></button>
+              <button class="conv-modelchip" data-model="qwen2.5:7b">qwen2.5:7b <span>~4.7GB · 8GB GPU</span></button>
+              <button class="conv-modelchip" data-model="llama3.1:8b">llama3.1:8b <span>~4.9GB · 8GB GPU</span></button>
+            </div>
+            <p class="hint">Under ~5GB VRAM? Stick to the 1–3B models. Bigger models give better corrections but need more VRAM.</p>
+
+            <button class="pill-btn accent" id="convOllamaPull"><span>&#8595;</span> Download this model</button>
+            <div id="convOllamaProgress" hidden>
+              <div class="progress-track"><div class="progress-fill" id="convOllamaFill" style="width:0%"></div></div>
+              <div class="job-meta"><span id="convOllamaPullStatus">Starting…</span></div>
+            </div>
+
+            <label class="field-label">Installed models <span class="muted">(tap to use)</span></label>
+            <div class="conv-installed" id="convOllamaInstalled"><span class="muted">—</span></div>
+
+            <label class="field-label">Ollama address <span class="muted">(advanced)</span></label>
+            <input type="text" id="convOllamaBase" class="text-input" placeholder="http://127.0.0.1:11434">
+          </div>
+
           <label class="field-label">Your level</label>
           <div class="quality-row" id="convLevelRow">
             <button class="q-btn active" data-level="auto">Auto</button>
@@ -465,13 +517,28 @@
             <button class="q-btn" data-level="advanced">Advanced</button>
           </div>
 
-          <label class="field-label">Whisper model <span class="muted">(for the Whisper input mode)</span></label>
+          <label class="field-label">Whisper model <span class="muted">(final transcription quality)</span></label>
           <div class="quality-row" id="convWhisperRow">
             <button class="q-btn" data-whisper="tiny">tiny</button>
             <button class="q-btn active" data-whisper="base">base</button>
             <button class="q-btn" data-whisper="small">small</button>
             <button class="q-btn" data-whisper="medium">medium</button>
           </div>
+
+          <div class="conv-whisper-dev">
+            <span class="conv-whisper-badge" id="convWhisperBadge">Whisper: checking…</span>
+          </div>
+          <label class="field-label">Run Whisper on</label>
+          <div class="quality-row" id="convWhisperDeviceRow">
+            <button class="q-btn active" data-device="auto">Auto</button>
+            <button class="q-btn" data-device="cuda">GPU (CUDA)</button>
+            <button class="q-btn" data-device="cpu">CPU</button>
+          </div>
+          <p class="hint" id="convWhisperHint">If it says “running on CPU”, the live stream will be slow. For GPU, an NVIDIA card with CUDA is needed — in your env run: <code>pip install nvidia-cublas-cu12 nvidia-cudnn-cu12</code>, then restart the server.</p>
+
+          <label class="field-label">Proxy <span class="muted">(optional — if the provider is blocked on your network)</span></label>
+          <input type="text" id="convProxy" class="text-input" placeholder="e.g. http://127.0.0.1:10809">
+          <p class="hint">Leave blank to use your system/VPN proxy. If the tutor can't connect (DNS/region block), paste your local proxy here — the same one your VPN client exposes (Clash, v2rayN, etc.).</p>
 
           <button class="pill-btn accent big" id="convSettingsSave">Save AI settings</button>
           <p class="hint" id="convSettingsMsg" hidden></p>
