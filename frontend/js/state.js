@@ -26,11 +26,14 @@ export const state = {
   dictStatus: 'all',     // all | due | new | learning | mastered
   dictStats: null,       // {due, new, learning, review, mastered, streak, ...}
 
-  // text-to-speech (StyleTTS2)
-  ttsLibrary: [],        // [{id, title, text, file, duration, voice_name, created}]  newest first
+  // text-to-speech (StyleTTS2 + gTTS)
+  ttsLibrary: [],        // [{id, title, text, file, duration, voice_name, engine, created}]  newest first
   ttsVoices: [],         // [{id, name, file, created}]  saved reference voices for cloning
-  ttsAvailable: null,    // {available, ffmpeg, max_chars} | null (not checked yet)
+  ttsAvailable: null,    // {available, gtts, ffmpeg, max_chars, ...} | null (not checked yet)
   ttsVoice: '',          // selected voice id for the composer ('' = built-in default)
+  ttsEngine: 'styletts2',// which engine to use: 'styletts2' (offline) | 'gtts' (online)
+  ttsLang: 'en',         // gTTS language code
+  ttsTld: 'com',         // gTTS English accent (Google domain)
 
   // study session (spaced repetition)
   study: {

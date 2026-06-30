@@ -11,8 +11,8 @@
 #      docker build -t echo-mytube .
 #  …but normally you'll just use docker-compose (see docker-compose.yml).
 # =============================================================================
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
-
+#FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+FROM echo-mytube:v3.0.0
 # Quieter apt, no .pyc files, unbuffered logs so `docker logs` is live.
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
@@ -46,7 +46,7 @@ WORKDIR /app
 # we install them explicitly here to make the container "batteries included".
 COPY backend/requirements.txt /app/backend/requirements.txt
 RUN pip install -r /app/backend/requirements.txt && \
-    pip install "faster-whisper>=1.0" "styletts2>=0.1.6" yt-dlp
+    pip install "faster-whisper>=1.0" "styletts2>=0.1.6" yt-dlp gtts
 
 # --- Application code ------------------------------------------------------- #
 COPY backend  /app/backend

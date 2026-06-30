@@ -29,31 +29,56 @@ router = APIRouter(prefix="/api/tts", tags=["tts"])
 @router.get("/available")
 def api_tts_available():
     return {
-        "available": tts.is_available(),
+        "available": tts.is_available(),          # StyleTTS2 (default engine)
+        "gtts": tts.gtts_available(),             # gTTS alternative engine
         "ffmpeg": tts.ffmpeg_available(),
         "max_chars": tts.MAX_TEXT_CHARS,
+        "gtts_common_langs": tts.GTTS_COMMON_LANGS,
+        "gtts_accents": tts.GTTS_ACCENTS,
     }
+
+
+@router.get("/gtts_languages")
+def api_tts_gtts_languages():
+    """Full list of languages gTTS can speak (for the language picker)."""
+    return {"languages": tts.gtts_languages()}
 
 
 @router.post("")
 def api_tts_start(req: TTSRequest):
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
-    if not tts.is_available():
-        raise HTTPException(
-            status_code=503,
-            detail="StyleTTS2 is not installed on the server. "
-                   "Run 'pip install styletts2' and restart Echo.",
-        )
+
+    engine = req.engine if req.engine in tts.VALID_ENGINES else tts.ENGINE_STYLETTS2
+
+    if engine == tts.ENGINE_GTTS:
+        if not tts.gtts_available():
+            raise HTTPException(
+                status_code=503,
+                detail="gTTS is not installed on the server. "
+                       "Run 'pip install gtts' and restart the app.",
+            )
+    else:
+        if not tts.is_available():
+            raise HTTPException(
+                status_code=503,
+                detail="StyleTTS2 is not installed on the server. "
+                       "Run 'pip install styletts2' and restart Echo.",
+            )
+
     opts = {
         "diffusion_steps": req.diffusion_steps,
         "embedding_scale": req.embedding_scale,
         "alpha": req.alpha,
         "beta": req.beta,
+        # gTTS options (ignored by StyleTTS2):
+        "lang": req.lang,
+        "tld": req.tld,
+        "slow": req.slow,
     }
-    log.info("Start TTS: %d chars, voice=%s, steps=%d",
-             len(req.text), req.voice_id or "default", req.diffusion_steps)
-    return tts.start_job(req.text, req.title, req.voice_id, opts)
+    log.info("Start TTS [%s]: %d chars, voice=%s, lang=%s",
+             engine, len(req.text), req.voice_id or "default", req.lang)
+    return tts.start_job(req.text, req.title, req.voice_id, opts, engine)
 
 
 @router.get("/jobs")

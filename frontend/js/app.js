@@ -29,6 +29,9 @@ window.MyTube = {
   deleteTtsEntry,
   ttsToFlashcards,
   ttsAddSegment,
+  // shared helpers used by other modules (e.g. conversation.js)
+  showToast: (msg) => showToast(msg),
+  refreshDictionary: async () => { await loadDictionary(); ui.renderDictionary(); },
 };
 
 /* ---------- routing ---------- */
@@ -580,13 +583,20 @@ function openAddToDict(payload) {
   if (hasSource) {
     $('dictSourceLine').innerHTML =
       `From <b>${esc(payload.title || payload.path)}</b> &middot; ${fmtTimestamp(payload.start || 0)}`;
+    const isAudio = payload.media_type === 'audio';
     $('dictCapAudio').checked = true;
     $('dictCapImage').checked = false;
     $('dictCapVideo').checked = false;
-    CAP_IDS.forEach((id) => { $(id).disabled = !state.dictFfmpeg; });
-    $('dictCapHint').textContent = state.dictFfmpeg
-      ? 'Clips are cut from the video around this subtitle line.'
-      : "ffmpeg isn't installed on the server, so clips can't be captured — the text & meaning will still be saved.";
+    // Audio sources have no picture, so only the audio clip can be captured.
+    CAP_IDS.forEach((id) => {
+      const audioOnlyDisabled = isAudio && (id === 'dictCapImage' || id === 'dictCapVideo');
+      $(id).disabled = !state.dictFfmpeg || audioOnlyDisabled;
+    });
+    $('dictCapHint').textContent = !state.dictFfmpeg
+      ? "ffmpeg isn't installed on the server, so clips can't be captured — the text & meaning will still be saved."
+      : isAudio
+        ? 'An audio clip is cut from this file around this line (audio has no picture, so image/video are unavailable).'
+        : 'Clips are cut from the video around this subtitle line.';
   }
   showDictModal(hasSource);  // a sentence is pre-filled → jump straight to the meaning field
 }
@@ -768,33 +778,121 @@ function endStudy() {
   goRoute('dictionary');
 }
 
-/* ---------- text-to-speech (StyleTTS2) ---------- */
+/* ---------- text-to-speech (StyleTTS2 + gTTS) ---------- */
 let ttsPollTimer = null;
 let ttsAvailChecked = false;
+let ttsLangsLoaded = false;
 
 async function openTtsPage() {
   if (!ttsAvailChecked) {
     try { state.ttsAvailable = await api.ttsAvailable(); }
-    catch { state.ttsAvailable = { available: false }; }
+    catch { state.ttsAvailable = { available: false, gtts: false }; }
     ttsAvailChecked = true;
   }
-  const hint = $('ttsAvailHint');
-  if (state.ttsAvailable && !state.ttsAvailable.available) {
-    hint.hidden = false;
-    hint.textContent =
-      "Text-to-speech needs StyleTTS2 on the server. Run 'pip install styletts2' and restart Echo, then reload this page.";
-    $('ttsGenerate').disabled = true;
-  } else {
-    hint.hidden = true;
-    $('ttsGenerate').disabled = false;
-  }
+
+  // If the StyleTTS2 engine isn't installed but gTTS is, start on gTTS so the
+  // page is useful out of the box.
+  const av = state.ttsAvailable || {};
+  if (!av.available && av.gtts) state.ttsEngine = 'gtts';
+
+  buildTtsEngineButtons();
+  buildTtsAccents();
+  await ensureTtsLanguages();
 
   await Promise.all([loadTtsLibrary(), loadTtsVoices()]);
   if (state.ttsVoice && !state.ttsVoices.some((v) => v.id === state.ttsVoice)) {
     state.ttsVoice = '';
   }
   $('ttsFolder').value = (state.config && state.config.tts_output_dir) || '';
+  applyTtsEngineUI();
   ui.renderTts();
+}
+
+// Render the StyleTTS2 / gTTS toggle, marking engines that aren't installed.
+function buildTtsEngineButtons() {
+  const av = state.ttsAvailable || {};
+  const row = $('ttsEngineRow');
+  if (!row) return;
+  row.querySelectorAll('.q-btn').forEach((btn) => {
+    const eng = btn.dataset.engine;
+    const installed = eng === 'gtts' ? !!av.gtts : !!av.available;
+    btn.classList.toggle('active', state.ttsEngine === eng);
+    btn.disabled = false; // still selectable so we can show the install hint
+    btn.dataset.installed = installed ? '1' : '0';
+    btn.onclick = () => setTtsEngine(eng);
+  });
+}
+
+function buildTtsAccents() {
+  const av = state.ttsAvailable || {};
+  const row = $('ttsAccentRow');
+  if (!row) return;
+  const accents = av.gtts_accents || [
+    { tld: 'com', name: 'US' }, { tld: 'co.uk', name: 'UK' },
+    { tld: 'com.au', name: 'Australia' }, { tld: 'co.in', name: 'India' },
+  ];
+  row.innerHTML = accents
+    .map((a) => `<button class="q-btn${a.tld === state.ttsTld ? ' active' : ''}" data-tld="${a.tld}">${esc(a.name)}</button>`)
+    .join('');
+  row.querySelectorAll('.q-btn').forEach((btn) => {
+    btn.onclick = () => {
+      state.ttsTld = btn.dataset.tld;
+      row.querySelectorAll('.q-btn').forEach((b) => b.classList.toggle('active', b === btn));
+    };
+  });
+}
+
+// Fill the language <select> from the server's full gTTS language list (once).
+async function ensureTtsLanguages() {
+  const sel = $('ttsLang');
+  if (!sel || ttsLangsLoaded) return;
+  let langs = (state.ttsAvailable && state.ttsAvailable.gtts_common_langs) || null;
+  try {
+    if (state.ttsAvailable && state.ttsAvailable.gtts) {
+      const res = await api.ttsGttsLanguages();
+      if (res && res.languages && res.languages.length) langs = res.languages;
+    }
+  } catch { /* fall back to the common list */ }
+  langs = langs || [{ code: 'en', name: 'English' }];
+  sel.innerHTML = langs
+    .map((l) => `<option value="${esc(l.code)}">${esc(l.name)} (${esc(l.code)})</option>`)
+    .join('');
+  sel.value = state.ttsLang;
+  if (sel.value !== state.ttsLang) { state.ttsLang = sel.value; }
+  sel.onchange = () => {
+    state.ttsLang = sel.value;
+    // The accent picker only makes sense for English.
+    $('ttsAccentWrap').hidden = state.ttsLang !== 'en';
+  };
+  ttsLangsLoaded = true;
+}
+
+function setTtsEngine(engine) {
+  state.ttsEngine = engine === 'gtts' ? 'gtts' : 'styletts2';
+  buildTtsEngineButtons();
+  applyTtsEngineUI();
+}
+
+// Show/hide the engine-specific option blocks and set the availability hint.
+function applyTtsEngineUI() {
+  const av = state.ttsAvailable || {};
+  const isGtts = state.ttsEngine === 'gtts';
+  $('ttsGttsOpts').hidden = !isGtts;
+  $('ttsStyleOpts').hidden = isGtts;
+  $('ttsAccentWrap').hidden = !(isGtts && state.ttsLang === 'en');
+
+  const installed = isGtts ? !!av.gtts : !!av.available;
+  const hint = $('ttsAvailHint');
+  if (!installed) {
+    hint.hidden = false;
+    hint.textContent = isGtts
+      ? "This engine needs gTTS on the server. Run 'pip install gtts' and restart the app, then reload this page."
+      : "This engine needs StyleTTS2 on the server. Run 'pip install styletts2' and restart the app, then reload this page.";
+    $('ttsGenerate').disabled = true;
+  } else {
+    hint.hidden = true;
+    $('ttsGenerate').disabled = false;
+  }
 }
 
 async function saveTtsFolder() {
@@ -822,12 +920,17 @@ async function startTts() {
   const btn = $('ttsGenerate');
   btn.disabled = true;
   try {
+    const isGtts = state.ttsEngine === 'gtts';
     const job = await api.startTts({
       text,
       title: $('ttsTitle').value.trim(),
-      voice_id: state.ttsVoice || '',
+      engine: state.ttsEngine,
+      voice_id: isGtts ? '' : (state.ttsVoice || ''),
       diffusion_steps: Number($('ttsSteps').value) || 5,
       embedding_scale: Number($('ttsScale').value) || 1,
+      lang: state.ttsLang || 'en',
+      tld: state.ttsTld || 'com',
+      slow: !!($('ttsSlow') && $('ttsSlow').checked),
     });
     $('ttsProgress').hidden = false;
     $('ttsFill').style.width = '0%';
@@ -853,7 +956,7 @@ function pollTts(jobId) {
 
     const stageText = {
       queued: 'Queued…',
-      loading_model: 'Loading StyleTTS2 model (first time may download it — this can take a while)…',
+      loading_model: 'Loading the StyleTTS2 model (first time may download it — this can take a while)…',
       synthesizing: `Generating speech… ${job.percent || 0}%${job.chunks_total ? ` · ${job.chunks_done}/${job.chunks_total} parts` : ''}`,
       encoding: 'Finishing the audio file…',
       done: 'Done!',

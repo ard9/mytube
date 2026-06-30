@@ -46,8 +46,15 @@ _ENV_OVERRIDES = {
     "MYTUBE_PORT": "port",
 }
 
-# Video / subtitle extensions we recognise.
+# Video / audio / subtitle extensions we recognise.
 VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v", ".ogv"}
+# Audio-only files that live in the *same* library folder as the videos. They are
+# browsed, played, transcribed, noted and added to the dictionary exactly like
+# videos — the only practical difference is they have no picture, so the player
+# shows an audio placeholder and no video frame can be captured from them.
+AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".oga", ".opus", ".wma"}
+# Everything we treat as a playable "media" item in the library.
+MEDIA_EXTS = VIDEO_EXTS | AUDIO_EXTS
 SUBTITLE_EXTS = {".srt", ".vtt"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 

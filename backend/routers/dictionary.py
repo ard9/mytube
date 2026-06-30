@@ -14,8 +14,11 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
 import dictionary
+import tts
 from logging_setup import get_logger
-from schemas import DictionaryCreate, DictionaryReview, DictionaryUpdate
+from schemas import (
+    DictionaryCreate, DictionaryReview, DictionaryUpdate, DictionaryWithAudio,
+)
 
 log = get_logger("api.dictionary")
 router = APIRouter(prefix="/api/dictionary", tags=["dictionary"])
@@ -28,6 +31,47 @@ def api_dictionary_all():
         "ffmpeg": dictionary.ffmpeg_available(),
         "stats": dictionary.stats(),
     }
+
+
+@router.post("/with_audio")
+def api_dictionary_with_audio(req: DictionaryWithAudio):
+    """
+    Create a Word-bank card from text and, when asked, synthesise its audio with
+    a TTS engine and attach it. Powers the live-conversation "save this
+    correction" button: the card ends up holding the corrected sentence and a
+    clip that speaks it. If the audio step fails (e.g. gTTS offline, no engine
+    installed) the text card is still created and a warning is returned.
+    """
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    created = dictionary.add_entry(text, req.meaning)
+    if not req.with_audio:
+        return created
+
+    try:
+        clip = tts.synthesize_clip(text, req.engine, {
+            "lang": req.lang, "tld": req.tld,
+            "voice_id": req.voice_id, "slow": req.slow,
+        })
+    except Exception as exc:  # noqa: BLE001
+        log.warning("with_audio: synthesis failed for entry %s: %s", created["id"], exc)
+        return {**created, "_warning": f"Saved the text, but couldn't make the audio: {exc}"}
+
+    try:
+        with open(clip, "rb") as f:
+            updated = dictionary.attach_media(created["id"], "audio", f, clip.name)
+        log.info("with_audio: created card %s with %s audio", created["id"], tts.resolve_engine(req.engine))
+        return updated
+    except Exception as exc:  # noqa: BLE001
+        log.warning("with_audio: attaching audio for %s failed: %s", created["id"], exc)
+        return {**created, "_warning": f"Saved the text, but the audio couldn't be attached: {exc}"}
+    finally:
+        try:
+            clip.unlink()
+        except OSError:
+            pass
 
 
 @router.get("/stats")

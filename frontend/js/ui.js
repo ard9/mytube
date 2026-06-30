@@ -25,10 +25,20 @@ function overlays(video) {
 
 // Inner HTML for a .thumb / .un-thumb container.
 function thumbInner(video) {
-  const base = video.thumb
-    ? `<img loading="lazy" src="${api.thumbUrl(video.thumb)}" alt="">`
-    : `<div class="placeholder" data-thumb-for="${esc(video.path)}">&#9654;</div>`;
-  return base + durationBadge(video) + overlays(video);
+  let base;
+  if (video.thumb) {
+    // A real cover image (sibling) — use it for audio or video alike.
+    base = `<img loading="lazy" src="${api.thumbUrl(video.thumb)}" alt="">`;
+  } else if (video.media_type === 'audio') {
+    // Audio has no video frame to grab — show a music icon instead of queuing
+    // a thumbnail fetch (no data-thumb-for, so processThumbnails skips it).
+    base = `<div class="placeholder audio-ph">&#127925;</div>`;
+  } else {
+    base = `<div class="placeholder" data-thumb-for="${esc(video.path)}">&#9654;</div>`;
+  }
+  const audioBadge = video.media_type === 'audio'
+    ? '<span class="audio-badge">&#127925; Audio</span>' : '';
+  return base + audioBadge + durationBadge(video) + overlays(video);
 }
 
 const thumbCache = {};
@@ -212,6 +222,7 @@ export function renderFindResults(matches, query) {
       window.MyTube.openAddToDict({
         text: m.text, start: m.time, end: m.end,
         path: state.current.path, title: state.current.title,
+        media_type: state.current.media_type,
       });
     };
   });
@@ -269,7 +280,7 @@ function card(v) {
       if (!first) return;
       window.MyTube.openAddToDict({
         text: first.text, start: first.time, end: first.end,
-        path: v.path, title: v.title,
+        path: v.path, title: v.title, media_type: v.media_type,
       });
     };
   }
@@ -313,6 +324,16 @@ export async function renderWatch(video, jumpTo = null) {
   const player = $('player');
   player.innerHTML = '';
   player.playbackRate = state.playbackRate;
+
+  // Audio files play through the same <video> element (audio comes out, no
+  // picture); flag the shell so it shows an audio look instead of a black box.
+  const isAudio = video.media_type === 'audio';
+  const shell = player.closest('.player-shell');
+  if (shell) {
+    shell.classList.toggle('audio-mode', isAudio);
+    shell.dataset.audioTitle = isAudio ? (video.title || '') : '';
+  }
+
   if (video.subtitle) {
     const track = document.createElement('track');
     track.kind = 'subtitles'; track.label = 'Captions'; track.srclang = 'en';
@@ -835,9 +856,13 @@ function ttsCard(e) {
   const el = document.createElement('div');
   el.className = 'tts-card';
 
-  const voiceTag = e.voice_name
-    ? `<span class="tag">&#127908; ${esc(e.voice_name)}</span>`
-    : '<span class="tag">Default voice</span>';
+  const isGtts = e.engine === 'gtts';
+  const engineTag = `<span class="tag">${isGtts ? '&#127760; gTTS' : '&#129302; StyleTTS2'}</span>`;
+  const voiceTag = isGtts
+    ? (e.voice_name ? `<span class="tag">${esc(e.voice_name.replace(/^gTTS\s*·\s*/, ''))}</span>` : '')
+    : (e.voice_name
+        ? `<span class="tag">&#127908; ${esc(e.voice_name)}</span>`
+        : '<span class="tag">Default voice</span>');
   const dur = e.duration ? fmtDuration(e.duration) : '';
   const downloadName = (e.title || 'audio').replace(/[^\w.-]+/g, '_').slice(0, 60) +
     (e.file && e.file.endsWith('.mp3') ? '.mp3' : '.wav');
@@ -867,7 +892,7 @@ function ttsCard(e) {
   el.innerHTML = `
     <div class="tts-card-head">
       <div class="tts-card-title">${esc(e.title || 'Untitled')}</div>
-      <div class="tts-card-meta">${voiceTag}${dur ? `<span>${dur}</span>` : ''}<span>${e.chars} chars</span>${hasSegs ? '<span>&#128266; read-along</span>' : ''}</div>
+      <div class="tts-card-meta">${engineTag}${voiceTag}${dur ? `<span>${dur}</span>` : ''}<span>${e.chars} chars</span>${hasSegs ? '<span>&#128266; read-along</span>' : ''}</div>
     </div>
     ${body}
     <audio class="dict-audio" controls preload="none" src="${api.ttsMediaUrl(e.id)}"></audio>

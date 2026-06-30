@@ -1,7 +1,7 @@
 services:
   echo:
     build: .
-    image: echo-mytube
+    image: echo-mytube:v4.0.0
     container_name: echo-mytube
     ports:
       - "8420:8420"
@@ -37,7 +37,7 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - /home/armin/code-ai/practice/Zimanova/ollama_models:/root/.ollama
+          - /home/armin/code-ai/practice/Zibanimen/ollama_models/models:/root/.ollama/models
     deploy:
       resources:
         reservations:

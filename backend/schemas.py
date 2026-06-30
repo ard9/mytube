@@ -76,6 +76,20 @@ class DictionaryReview(BaseModel):
     rating: int        # 1 = Again, 2 = Hard, 3 = Good, 4 = Easy
 
 
+class DictionaryWithAudio(BaseModel):
+    """Create a Word-bank card from plain text and (optionally) generate + attach
+    its spoken audio with a TTS engine. Used by the live-conversation 'save this
+    correction' button so a card carries the corrected sentence AND its audio."""
+    text: str
+    meaning: str = ""
+    with_audio: bool = True
+    engine: str = "gtts"             # "gtts" (online) | "styletts2" (offline); falls back if missing
+    lang: str = "en"                 # gTTS language (corrections are English → "en")
+    tld: str = "com"                 # gTTS English accent
+    voice_id: str = ""               # StyleTTS2 saved voice id ("" = default)
+    slow: bool = False               # gTTS slow speech
+
+
 # ----- transcribe (offline Whisper) --------------------------------------- #
 class TranscribeRequest(BaseModel):
     path: str
@@ -85,15 +99,20 @@ class TranscribeRequest(BaseModel):
     model_path: str = ""    # "" = auto-download by name; else a local folder with a pre-downloaded model
 
 
-# ----- text-to-speech (StyleTTS2) ----------------------------------------- #
+# ----- text-to-speech (StyleTTS2 / gTTS) ---------------------------------- #
 class TTSRequest(BaseModel):
     text: str
     title: str = ""
+    engine: str = "styletts2"        # "styletts2" (offline) | "gtts" (online, many languages)
     voice_id: str = ""               # "" = built-in default voice; else a saved voice id
     diffusion_steps: int = 5         # quality vs. speed (more = slower, more varied)
     embedding_scale: float = 1.0     # expressiveness (higher = more emotional)
     alpha: float = 0.3               # timbre blend toward the text vs. the reference voice
     beta: float = 0.7                # prosody blend toward the text vs. the reference voice
+    # gTTS-only options:
+    lang: str = "en"                 # language code (en, es, fr, fa, ...)
+    tld: str = "com"                 # Google domain → English accent (com=US, co.uk=UK, ...)
+    slow: bool = False               # speak slowly
 
 
 class TTSToDictRequest(BaseModel):

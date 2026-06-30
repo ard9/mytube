@@ -85,6 +85,13 @@ export const api = {
     }).then(json),
   deleteDictionaryEntry: (id) =>
     fetch(`/api/dictionary/${id}`, { method: 'DELETE' }).then(json),
+  // Create a card from text and (optionally) generate + attach its TTS audio.
+  dictWithAudio: (body) =>
+    fetch('/api/dictionary/with_audio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then(json),
   // Spaced repetition
   getDictStats: () => fetch('/api/dictionary/stats').then(json),
   getStudyCards: (limit = 0, includeNew = true) =>
@@ -117,8 +124,9 @@ export const api = {
   getTranscribeStatus: (jobId) => fetch(`/api/transcribe/${jobId}`).then(json),
   cancelTranscribe: (jobId) => fetch(`/api/transcribe/${jobId}/cancel`, { method: 'POST' }).then(json),
 
-  // Text-to-speech (StyleTTS2)
+  // Text-to-speech (StyleTTS2 + gTTS)
   ttsAvailable: () => fetch('/api/tts/available').then(json),
+  ttsGttsLanguages: () => fetch('/api/tts/gtts_languages').then(json),
   startTts: (body) =>
     fetch('/api/tts', {
       method: 'POST',

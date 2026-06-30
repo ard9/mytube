@@ -291,11 +291,18 @@
     <div class="tts-layout">
       <div class="panel tts-composer">
         <h2>Text to speech</h2>
-        <p class="muted">Paste English text — even long text — and StyleTTS2 turns it into natural speech you can play, save, and drop straight into your Word bank as a flashcard.</p>
+        <p class="muted">Paste English text — even long text — and turn it into natural speech you can play, save, and drop straight into your Word bank as a flashcard.</p>
         <p class="hint" id="ttsAvailHint" hidden></p>
 
+        <label class="field-label">Engine</label>
+        <div class="quality-row" id="ttsEngineRow">
+          <button class="q-btn active" data-engine="styletts2">StyleTTS2 <span class="muted">· offline</span></button>
+          <button class="q-btn" data-engine="gtts">gTTS <span class="muted">· online, many languages</span></button>
+        </div>
+        <p class="hint" id="ttsEngineHint">StyleTTS2 runs fully offline and can clone a voice. gTTS needs internet but is a tiny install and speaks many languages.</p>
+
         <label class="field-label">Text</label>
-        <textarea id="ttsText" class="text-input tts-textarea" placeholder="Paste or type the English text to speak… (long text is split into sentences and stitched back together automatically)"></textarea>
+        <textarea id="ttsText" class="text-input tts-textarea" placeholder="Paste or type the text to speak… (long text is split into sentences and stitched back together automatically)"></textarea>
         <div class="tts-textmeta"><span id="ttsCharCount">0 characters</span></div>
 
         <label class="field-label">Title <span class="muted">(optional)</span></label>
@@ -308,30 +315,44 @@
         </div>
         <p class="hint" id="ttsFolderHint">New audio is saved here. Leave blank to use the default folder inside the app. Clips you already made keep their original location.</p>
 
-        <label class="field-label">Voice</label>
-        <div class="quality-row" id="ttsVoiceRow">
-          <button class="q-btn active" data-voice="">Default voice</button>
-        </div>
-        <div class="tts-voice-add">
-          <label class="dict-upload">
-            <input type="file" id="ttsVoiceFile" accept="audio/*" hidden>
-            <span class="btn">&#127908; Add a voice to clone</span><span class="fname" id="ttsVoiceFileName"></span>
-          </label>
-          <div class="tts-voice-save-row" id="ttsVoiceSaveRow" hidden>
-            <input type="text" id="ttsVoiceName" class="text-input" placeholder="Name this voice (e.g. My voice)">
-            <button class="pill-btn ghost small" id="ttsVoiceSave">Save</button>
-            <button class="pill-btn ghost small" id="ttsVoiceCancel">Cancel</button>
+        <!-- gTTS-only options: language + (for English) accent -->
+        <div id="ttsGttsOpts" hidden>
+          <label class="field-label">Language</label>
+          <select id="ttsLang" class="text-input"></select>
+          <div id="ttsAccentWrap">
+            <label class="field-label">English accent</label>
+            <div class="quality-row" id="ttsAccentRow"></div>
           </div>
+          <label class="check-row"><input type="checkbox" id="ttsSlow"> Speak slowly</label>
         </div>
-        <p class="hint">Clone any speaker from a short (5–15s), clean audio clip. Saved voices appear as options above; tap one to use it.</p>
 
-        <button class="pill-btn ghost small" id="ttsAdvancedToggle" type="button">Advanced options &#9662;</button>
-        <div id="ttsAdvanced" hidden>
-          <label class="field-label">Quality (diffusion steps): <span id="ttsStepsVal">5</span></label>
-          <input type="range" id="ttsSteps" min="3" max="20" value="5" class="tts-range">
-          <label class="field-label">Expressiveness: <span id="ttsScaleVal">1.0</span></label>
-          <input type="range" id="ttsScale" min="1" max="2" step="0.1" value="1" class="tts-range">
-          <p class="hint">More steps = higher quality but slower. Higher expressiveness = more emotional, less neutral delivery.</p>
+        <!-- StyleTTS2-only options: voice cloning + advanced sliders -->
+        <div id="ttsStyleOpts">
+          <label class="field-label">Voice</label>
+          <div class="quality-row" id="ttsVoiceRow">
+            <button class="q-btn active" data-voice="">Default voice</button>
+          </div>
+          <div class="tts-voice-add">
+            <label class="dict-upload">
+              <input type="file" id="ttsVoiceFile" accept="audio/*" hidden>
+              <span class="btn">&#127908; Add a voice to clone</span><span class="fname" id="ttsVoiceFileName"></span>
+            </label>
+            <div class="tts-voice-save-row" id="ttsVoiceSaveRow" hidden>
+              <input type="text" id="ttsVoiceName" class="text-input" placeholder="Name this voice (e.g. My voice)">
+              <button class="pill-btn ghost small" id="ttsVoiceSave">Save</button>
+              <button class="pill-btn ghost small" id="ttsVoiceCancel">Cancel</button>
+            </div>
+          </div>
+          <p class="hint">Clone any speaker from a short (5–15s), clean audio clip. Saved voices appear as options above; tap one to use it.</p>
+
+          <button class="pill-btn ghost small" id="ttsAdvancedToggle" type="button">Advanced options &#9662;</button>
+          <div id="ttsAdvanced" hidden>
+            <label class="field-label">Quality (diffusion steps): <span id="ttsStepsVal">5</span></label>
+            <input type="range" id="ttsSteps" min="3" max="20" value="5" class="tts-range">
+            <label class="field-label">Expressiveness: <span id="ttsScaleVal">1.0</span></label>
+            <input type="range" id="ttsScale" min="1" max="2" step="0.1" value="1" class="tts-range">
+            <p class="hint">More steps = higher quality but slower. Higher expressiveness = more emotional, less neutral delivery.</p>
+          </div>
         </div>
 
         <button class="pill-btn accent big" id="ttsGenerate"><span>&#128266;</span> Generate speech</button>

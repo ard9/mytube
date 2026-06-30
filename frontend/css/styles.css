@@ -274,6 +274,32 @@ code { background: #ffffff14; padding: 1px 6px; border-radius: 5px; font-size: 1
 .watch-main { flex: 1; min-width: 0; }
 .player-shell { width: 100%; background: #000; border-radius: 12px; overflow: hidden; aspect-ratio: 16 / 9; }
 .player-shell video { width: 100%; height: 100%; display: block; background: #000; }
+
+/* --- Audio files: shown with a music look instead of a black video box --- */
+.card .thumb .placeholder.audio-ph {
+  color: #ff9a6e; font-size: 46px;
+  background: radial-gradient(circle at 50% 38%, #2a2440, #14121c 72%);
+}
+.audio-badge {
+  position: absolute; top: 8px; right: 8px; z-index: 3;
+  background: #000000c0; color: #ffd9c9; font-size: 10px; font-weight: 700;
+  letter-spacing: .4px; padding: 3px 7px; border-radius: 4px;
+}
+/* When an audio file is "watching", the <video> has no picture, so dress the
+   shell up with a gradient + big music note and keep the native controls. */
+.player-shell.audio-mode {
+  background: linear-gradient(150deg, #2a2440, #14121c);
+  aspect-ratio: auto; min-height: 220px; position: relative;
+  display: flex; align-items: center; justify-content: center;
+}
+.player-shell.audio-mode::before {
+  content: "\1F3B5"; font-size: 72px; opacity: .5;
+  position: absolute; top: 36px; left: 50%; transform: translateX(-50%);
+  pointer-events: none;
+}
+.player-shell.audio-mode video {
+  height: auto; background: transparent; margin-top: auto;
+}
 .watch h1 { font-size: 20px; margin: 16px 0 12px; line-height: 1.4; }
 .action-row {
   display: flex; align-items: center; justify-content: space-between;
@@ -1077,6 +1103,15 @@ kbd {
 .conv-corr-bad { color: var(--m-again); text-decoration: line-through; opacity: .85; }
 .conv-corr-arrow { color: var(--text-dimmer); }
 .conv-corr-good { color: var(--green); font-weight: 600; }
+.conv-corr-save {
+  margin-left: auto; flex-shrink: 0; cursor: pointer;
+  background: #ffffff10; border: 1px solid #ffffff1f; color: var(--text-dim);
+  font-size: 12px; line-height: 1; padding: 4px 8px; border-radius: 8px;
+  transition: background .15s, color .15s, border-color .15s;
+}
+.conv-corr-save:hover { background: var(--accent); color: #1a0e0c; border-color: var(--accent); }
+.conv-corr-save:disabled { cursor: default; opacity: .8; }
+.conv-corr-save.saved { background: #1f7a3a33; color: var(--green); border-color: #1f7a3a55; }
 .conv-corr-exp { font-size: 13px; color: var(--text-dim); margin-top: 4px; }
 
 /* live interim transcript */

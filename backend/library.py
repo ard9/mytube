@@ -21,7 +21,10 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from config import VIDEO_EXTS, SUBTITLE_EXTS, IMAGE_EXTS, get_library_path
+from config import (
+    VIDEO_EXTS, AUDIO_EXTS, MEDIA_EXTS, SUBTITLE_EXTS, IMAGE_EXTS,
+    get_library_path,
+)
 
 log = logging.getLogger("mytube.library")
 
@@ -106,11 +109,13 @@ def scan_library() -> dict:
     groups: dict[tuple[str, str], list[dict]] = {}
 
     for video in sorted(root.rglob("*")):
-        if not video.is_file() or video.suffix.lower() not in VIDEO_EXTS:
+        if not video.is_file() or video.suffix.lower() not in MEDIA_EXTS:
             continue
         # Skip our own thumbnail cache.
         if ".thumbs" in video.parts:
             continue
+
+        is_audio = video.suffix.lower() in AUDIO_EXTS
 
         info = _read_info_json(video)
         rel_parts = video.relative_to(root).parts
@@ -123,6 +128,9 @@ def scan_library() -> dict:
             or folder_channel
         )
 
+        # Audio files have no video frame to grab a thumbnail from, so don't
+        # bother generating one (the frontend shows an audio icon instead). They
+        # can still have a sibling cover image, which we'll happily use.
         thumb = _find_sibling(video, IMAGE_EXTS)
         subtitle = _find_sibling(video, SUBTITLE_EXTS)
 
@@ -133,6 +141,7 @@ def scan_library() -> dict:
             "title": info.get("title") or _clean_title(video.stem),
             "category": category,
             "uploader": uploader,
+            "media_type": "audio" if is_audio else "video",
             "duration": info.get("duration"),
             "upload_date": info.get("upload_date"),
             "video_id": info.get("id"),
@@ -319,7 +328,7 @@ def search_subtitles(query: str, limit_per_video: int = 3) -> list[dict]:
 
     results = []
     for video in sorted(root.rglob("*")):
-        if not video.is_file() or video.suffix.lower() not in VIDEO_EXTS:
+        if not video.is_file() or video.suffix.lower() not in MEDIA_EXTS:
             continue
         if ".thumbs" in video.parts:
             continue

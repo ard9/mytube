@@ -8,13 +8,18 @@ __pycache__/
 .env
 .venv
 venv/
+cache/
+data/
+ollama_models/
 env/
 ENV/
 dict_media/
+tts_media/
 # Database
 data/*.db
 *.sqlite3
 *.db
+*.json
 
 knowledge_base/
 *.txt
@@ -22,13 +27,12 @@ knowledge_base/
 # Logs
 *.log
 logs/
-ollama_models/
-tts_media/
+
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
-*.json
+
 # IDE
 .vscode/
 .idea/

@@ -7,7 +7,7 @@
  */
 
 import { api } from './api.js';
-import { esc } from './state.js';
+import { state, esc } from './state.js';
 import { WhisperStream } from './whisperStream.js';
 
 const $ = (id) => document.getElementById(id);
@@ -105,17 +105,67 @@ function renderSessions() {
 
 function correctionsHtml(corrections) {
   if (!corrections || !corrections.length) return '';
-  const items = corrections.map((c) => `
+  const items = corrections.map((c) => {
+    const fixed = c.fixed || '';
+    // A button to drop the corrected sentence into the Word bank *with* audio.
+    const saveBtn = fixed
+      ? `<button class="conv-corr-save" data-corr-save="1"
+           data-fixed="${esc(fixed).replace(/"/g, '&quot;')}"
+           data-exp="${esc(c.explanation || '').replace(/"/g, '&quot;')}"
+           title="Add the corrected sentence to your Word bank, with spoken audio">&#128218;&#43; &#128266;</button>`
+      : '';
+    return `
     <div class="conv-correction">
       <div class="conv-corr-line">
         <span class="conv-corr-bad">${esc(c.original || '')}</span>
         <span class="conv-corr-arrow">&#8594;</span>
-        <span class="conv-corr-good">${esc(c.fixed || '')}</span>
+        <span class="conv-corr-good">${esc(fixed)}</span>
+        ${saveBtn}
       </div>
       ${c.explanation ? `<div class="conv-corr-exp" dir="auto">${esc(c.explanation)}</div>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
   return `<div class="conv-corrections"><div class="conv-corr-head">&#9998; Corrections</div>${items}</div>`;
+}
+
+// Save a single correction (the "fixed" sentence) into the Word bank, generating
+// and attaching TTS audio so the flashcard speaks the corrected sentence. Uses
+// whatever TTS engine/accent is chosen on the Text-to-speech page; the backend
+// falls back to whichever engine is installed.
+async function saveCorrectionToDict(btn) {
+  const text = btn.dataset.fixed || '';
+  const meaning = btn.dataset.exp || '';
+  if (!text || btn.disabled) return;
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '&#8230;';   // …
+  try {
+    const res = await api.dictWithAudio({
+      text,
+      meaning,
+      with_audio: true,
+      engine: state.ttsEngine || 'gtts',
+      lang: 'en',                          // the corrected sentence is English
+      tld: state.ttsTld || 'com',
+      voice_id: state.ttsEngine === 'gtts' ? '' : (state.ttsVoice || ''),
+      slow: false,
+    });
+    btn.innerHTML = '&#10003;';            // ✓
+    btn.classList.add('saved');
+    toast(res && res._warning ? res._warning : 'Added to your Word bank, with audio.');
+    if (window.MyTube && window.MyTube.refreshDictionary) window.MyTube.refreshDictionary();
+  } catch (e) {
+    btn.disabled = false;
+    btn.innerHTML = original;
+    toast('Could not add to Word bank: ' + e.message);
+  }
+}
+
+// Tiny toast shim — reuse the app's toast if present, else fall back to alert.
+function toast(msg) {
+  if (window.MyTube && window.MyTube.showToast) window.MyTube.showToast(msg);
+  else console.log(msg);
 }
 
 function messageHtml(m) {
@@ -1201,7 +1251,9 @@ export function initConversation() {
   // thread: replay a bot line
   $('convThread').addEventListener('click', (e) => {
     const sp = e.target.closest('[data-speak]');
-    if (sp) speak(sp.dataset.speak);
+    if (sp) { speak(sp.dataset.speak); return; }
+    const save = e.target.closest('[data-corr-save]');
+    if (save) saveCorrectionToDict(save);
   });
 
   // composer

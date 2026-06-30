@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -224,8 +225,9 @@ def _http_post_json(url: str, payload: dict, headers: dict, timeout: int = 90,
         except Exception:  # noqa: BLE001
             pass
         # Surface the provider's own message — it's usually very informative
-        # (bad key, model not found, rate limit, no credits, etc.).
-        msg = _extract_api_error(detail) or f"HTTP {exc.code} {exc.reason}"
+        # (bad key, model not found, rate limit, no credits, etc.). For HTML
+        # error pages (e.g. a Google 403), this returns guidance, not markup.
+        msg = _extract_api_error(detail, exc.code) or f"HTTP {exc.code} {exc.reason}"
         raise LLMError(msg) from exc
     except urllib.error.URLError as exc:
         reason = str(getattr(exc, "reason", exc))
@@ -247,19 +249,64 @@ def _http_post_json(url: str, payload: dict, headers: dict, timeout: int = 90,
         raise LLMError("The AI provider returned a response that wasn't valid JSON.") from exc
 
 
-def _extract_api_error(raw: str) -> str:
+def _extract_api_error(raw: str, status: int | None = None) -> str:
+    """
+    Turn a provider's error body into a short, useful message.
+
+    Most providers return JSON like {"error": {"message": "..."}}, which is very
+    informative (bad key, model not found, rate limit, no credits, ...). But some
+    return a plain **HTML error page** from an edge server/proxy — most commonly
+    Google's generic "Error 403 (Forbidden)!!1" page when the Gemini API is
+    blocked for your region/IP or the key isn't allowed. In that case we must NOT
+    dump raw HTML at the user; we explain what it means and how to fix it.
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return f"HTTP {status}" if status else ""
+
+    # 1) JSON error (the common, informative case).
     try:
         data = json.loads(raw)
-    except Exception:  # noqa: BLE001
-        return raw[:300] if raw else ""
-    if isinstance(data, dict):
-        err = data.get("error")
-        if isinstance(err, dict):
-            return err.get("message") or json.dumps(err)[:300]
-        if isinstance(err, str):
-            return err
-        if "message" in data:
-            return str(data["message"])
+        if isinstance(data, dict):
+            err = data.get("error")
+            if isinstance(err, dict):
+                return err.get("message") or json.dumps(err)[:300]
+            if isinstance(err, str):
+                return err
+            if "message" in data:
+                return str(data["message"])
+        return raw[:300]
+    except Exception:  # noqa: BLE001  (not JSON — fall through to HTML handling)
+        pass
+
+    # 2) Non-JSON, likely an HTML error page. Give guidance, not markup.
+    low = raw.lower()
+    looks_html = "<html" in low or "<!doctype" in low or "<title>" in low
+    if looks_html or "forbidden" in low or "error 403" in low:
+        if status == 403 or "403" in low or "forbidden" in low:
+            return (
+                "Google refused the request (403 Forbidden). This almost always means the "
+                "Gemini API isn't available for your region/IP, or the API key is restricted "
+                "or the 'Generative Language API' isn't enabled for it. Fixes: turn on a "
+                "VPN/proxy (system-wide / TUN mode, or set a Proxy in AI settings), enable the "
+                "Generative Language API for your key, or switch the provider to OpenRouter."
+            )
+        if status == 429 or "429" in low or "too many requests" in low:
+            return "The AI provider is rate-limiting requests (429). Wait a moment and try again."
+        if status in (401, 407) or "unauthorized" in low or "proxy authentication" in low:
+            return "The provider/proxy rejected the credentials (auth error). Check your API key and proxy settings."
+        # Generic HTML: surface the <title> if present, but never the whole page.
+        m = re.search(r"<title>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
+        title = re.sub(r"\s+", " ", (m.group(1) if m else "")).strip()
+        suffix = f" ({title})" if title else ""
+        return (
+            f"The AI provider returned an error page{suffix}"
+            + (f" [HTTP {status}]" if status else "")
+            + ". This is usually a blocked region/IP or a proxy issue — turn on your "
+            "VPN/proxy or switch provider in AI settings."
+        )
+
+    # 3) Some other plain-text body — keep it short.
     return raw[:300]
 
 
