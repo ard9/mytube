@@ -1090,6 +1090,8 @@ kbd {
   font-size: 14px;
   min-height: 20px;
 }
+/* live, not-yet-confirmed tail of streaming transcription (Google-style) */
+.conv-pending { color: var(--text-soft, #8a8f98); opacity: 0.7; }
 
 /* composer */
 .conv-composer { border-top: 1px solid var(--border-soft); padding: 12px 20px 16px; }

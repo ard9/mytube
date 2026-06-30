@@ -12,11 +12,11 @@ import logging
 import threading
 from pathlib import Path
 
-from config import ROOT_DIR
+from config import DATA_DIR
 
 log = logging.getLogger("mytube.notes")
 
-NOTES_FILE = ROOT_DIR / "notes.json"
+NOTES_FILE = DATA_DIR / "notes.json"
 _lock = threading.Lock()
 
 

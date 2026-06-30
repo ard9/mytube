@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 import urllib.error
@@ -41,14 +42,14 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from config import ROOT_DIR
+from config import DATA_DIR
 
 log = logging.getLogger("mytube.conversation")
 
 # --------------------------------------------------------------------------- #
 # On-disk layout
 # --------------------------------------------------------------------------- #
-CONV_DIR = ROOT_DIR / "conversation_data"
+CONV_DIR = DATA_DIR / "conversation_data"
 SETTINGS_FILE = CONV_DIR / "settings.json"
 SESSIONS_DIR = CONV_DIR / "sessions"
 
@@ -71,7 +72,10 @@ DEFAULT_SETTINGS = {
     "openai_key": "",
     "openai_base_url": "https://api.openai.com/v1",
     "openai_model": "gpt-4o-mini",
-    "ollama_base_url": "http://127.0.0.1:11434",
+    # In Docker the app and Ollama are separate containers, so 127.0.0.1 won't
+    # reach Ollama — set MYTUBE_OLLAMA_BASE_URL=http://ollama:11434 there. A value
+    # saved in the AI settings UI still takes precedence over this default.
+    "ollama_base_url": os.environ.get("MYTUBE_OLLAMA_BASE_URL") or "http://127.0.0.1:11434",
     "ollama_model": "llama3.2:3b",
     "temperature": 0.7,
     "proxy": "",                         # optional HTTP proxy, e.g. http://127.0.0.1:10809
@@ -82,9 +86,14 @@ DEFAULT_SETTINGS = {
     "whisper_partial_model": "tiny",     # fast model used only for live partials
     "whisper_device": "auto",            # auto | cuda | cpu
     "whisper_compute": "auto",           # auto | float16 | int8_float16 | int8
+    # real-time streaming STT (see streaming.py)
+    "stream_min_interval_ms": 500,       # how often a streaming inference pass runs
+    "stream_buffer_trim_s": 14.0,        # max buffer length before trimming to last commit
+    "stream_send_interval_ms": 250,      # how often the browser ships an audio frame
+    "stream_language": "en",             # language hint for the live stream
     "level": "auto",                     # auto | beginner | intermediate | advanced
     "explain_language": "Persian",       # language used to explain corrections
-    "vad_silence_ms": 800,               # hands-free: pause before auto-send
+    "vad_silence_ms": 1200,              # hands-free: pause before auto-send (Tight=800/Medium=1200/Patient=1800)
     "vad_sensitivity": 0.5,              # hands-free: 0..1 (higher = more sensitive)
 }
 
@@ -732,6 +741,48 @@ def _resolve_device(settings: dict) -> tuple[str, str]:
     return dev, comp
 
 
+def _looks_offline(exc: Exception) -> bool:
+    """True if an exception looks like a no-internet / DNS failure (so we can
+    retry loading the model straight from the local HuggingFace cache)."""
+    s = f"{type(exc).__name__}: {exc}".lower()
+    needles = ("nameresolutionerror", "max retries", "getaddrinfo",
+               "failed to resolve", "connectionerror", "huggingface.co",
+               "temporary failure in name resolution", "newconnectionerror")
+    return any(n in s for n in needles)
+
+
+def _load_model(model_size: str, device: str, compute: str):
+    """
+    Load a faster-whisper model, transparently handling an offline machine whose
+    model is already cached: faster-whisper otherwise tries to reach
+    huggingface.co on every load to check the model revision, which fails with a
+    DNS error when there's no internet. On such a failure we retry with
+    local_files_only=True to use the cache directly.
+    """
+    from faster_whisper import WhisperModel
+    try:
+        return WhisperModel(model_size, device=device, compute_type=compute)
+    except Exception as exc:  # noqa: BLE001
+        if _looks_offline(exc):
+            log.info("No internet; loading Whisper '%s' from local cache (offline).", model_size)
+            return WhisperModel(model_size, device=device, compute_type=compute,
+                                local_files_only=True)
+        raise
+
+
+def _probe_inference(model) -> None:
+    """
+    Force one tiny real inference so GPU runtime problems (e.g. a missing
+    cublas64_12.dll / cudnn DLL) surface HERE, at load time, instead of much
+    later mid-stream where they'd just kill the socket. Raises on failure.
+    """
+    import numpy as np
+    silent = np.zeros(16000, dtype=np.float32)   # 1s of silence at 16 kHz
+    segments, _ = model.transcribe(silent, beam_size=1, vad_filter=False)
+    for _ in segments:                           # force the lazy generator to decode
+        break
+
+
 def _get_whisper(model_size: str):
     settings = load_settings()
     model_size = model_size or settings.get("whisper_model", "base")
@@ -740,20 +791,34 @@ def _get_whisper(model_size: str):
     global _whisper_device_used
     with _whisper_lock:
         if key not in _whisper_cache:
-            from faster_whisper import WhisperModel
+            # Windows: make sure the pip-installed NVIDIA cuBLAS/cuDNN DLLs are on
+            # the search path before any GPU load — the same fix the subtitle path
+            # uses. Without it the model LOADS on cuda but inference later fails
+            # with "cublas64_12.dll is not found or cannot be loaded".
             try:
-                log.info("Loading Whisper '%s' on %s (%s)…", model_size, dev, comp)
-                m = WhisperModel(model_size, device=dev, compute_type=comp)
-                _whisper_device_used = dev
-                log.info("Whisper '%s' ready on %s.", model_size, dev)
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "Whisper '%s' failed to load on %s (%s). Falling back to CPU (int8) — "
-                    "this is much slower. For GPU, install CUDA libs: "
-                    "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12",
-                    model_size, dev, exc,
-                )
-                m = WhisperModel(model_size, device="cpu", compute_type="int8")
+                import transcribe
+                transcribe._register_cuda_dll_dirs()
+            except Exception:  # noqa: BLE001
+                pass
+
+            m = None
+            if dev != "cpu":
+                try:
+                    log.info("Loading Whisper '%s' on %s (%s)…", model_size, dev, comp)
+                    m = _load_model(model_size, dev, comp)
+                    _probe_inference(m)   # surfaces cuBLAS/cuDNN issues now, not mid-stream
+                    _whisper_device_used = dev
+                    log.info("Whisper '%s' ready on %s.", model_size, dev)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "Whisper '%s' can't run on %s (%s). Falling back to CPU (int8) — "
+                        "this is slower. For GPU, install the CUDA libs: "
+                        "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12",
+                        model_size, dev, exc,
+                    )
+                    m = None
+            if m is None:
+                m = _load_model(model_size, "cpu", "int8")
                 _whisper_device_used = "cpu"
             _whisper_cache[key] = m
         return _whisper_cache[key]

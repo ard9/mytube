@@ -18,8 +18,33 @@ from pathlib import Path
 log = logging.getLogger("mytube.config")
 
 # Project root = the directory that contains the `backend/` and `frontend/` dirs.
+# This is always the *code* location (used to find the frontend).
 ROOT_DIR = Path(__file__).resolve().parent.parent
-CONFIG_FILE = ROOT_DIR / "config.json"
+
+# Where all writable state lives (config.json, conversation_data/, dictionary,
+# tts_media/, notes, watch progress, ...). Defaults to the project root so a
+# normal local install behaves exactly as before. In Docker we set
+# MYTUBE_DATA_DIR=/data and mount a volume there, so the code stays in the image
+# and the user's data survives container rebuilds.
+DATA_DIR = Path(os.environ.get("MYTUBE_DATA_DIR") or ROOT_DIR).expanduser()
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    pass
+
+CONFIG_FILE = DATA_DIR / "config.json"
+
+# Deployment settings can also come from environment variables (handy for Docker,
+# where you don't want to bake a config.json into the image). Env wins over the
+# file when set. Maps ENV_NAME -> config key.
+_ENV_OVERRIDES = {
+    "MYTUBE_LIBRARY_PATH": "library_path",
+    "MYTUBE_YTDLP_BIN": "ytdlp_bin",
+    "MYTUBE_DEFAULT_QUALITY": "default_quality",
+    "MYTUBE_TTS_OUTPUT_DIR": "tts_output_dir",
+    "MYTUBE_HOST": "host",
+    "MYTUBE_PORT": "port",
+}
 
 # Video / subtitle extensions we recognise.
 VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".m4v", ".ogv"}
@@ -39,13 +64,29 @@ DEFAULTS = {
 
 
 def load_config() -> dict:
-    """Read config.json, falling back to DEFAULTS for any missing key."""
+    """
+    Read config.json, falling back to DEFAULTS for any missing key, then let
+    environment variables (MYTUBE_*) override — so a container can be configured
+    without editing or baking in a config.json.
+    """
     data = dict(DEFAULTS)
     if CONFIG_FILE.exists():
         try:
             data.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
         except (json.JSONDecodeError, OSError) as exc:
             log.warning("Could not read config.json (%s); using defaults", exc)
+
+    for env_name, key in _ENV_OVERRIDES.items():
+        raw = os.environ.get(env_name)
+        if raw is None or raw == "":
+            continue
+        if key == "port":
+            try:
+                data[key] = int(raw)
+            except ValueError:
+                log.warning("Ignoring non-integer %s=%r", env_name, raw)
+        else:
+            data[key] = raw
     return data
 
 
@@ -75,9 +116,12 @@ def get_tts_output_dir() -> Path | None:
 
 
 def setup_logging() -> None:
-    """Readable logging so the server is easy to debug from the console."""
-    logging.basicConfig(
-        level=os.environ.get("MYTUBE_LOGLEVEL", "INFO"),
-        format="%(asctime)s  %(levelname)-7s %(name)s  %(message)s",
-        datefmt="%H:%M:%S",
-    )
+    """
+    Readable logging so the server is easy to debug from the console.
+
+    Kept for backwards compatibility — the real setup now lives in
+    ``logging_setup.configure()`` (request ids, per-area levels, optional file
+    output). This just forwards to it.
+    """
+    import logging_setup
+    logging_setup.configure()

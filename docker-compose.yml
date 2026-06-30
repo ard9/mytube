@@ -1,0 +1,48 @@
+services:
+  echo:
+    build: .
+    image: echo-mytube
+    container_name: echo-mytube
+    ports:
+      - "8420:8420"
+
+    environment:
+      MYTUBE_LIBRARY_PATH: /library
+      MYTUBE_DATA_DIR: /data
+      MYTUBE_HOST: 0.0.0.0
+      MYTUBE_PORT: 8420
+      HF_HOME: /cache/huggingface          # container path — don't change this
+      MYTUBE_OLLAMA_BASE_URL: http://ollama:11434
+
+    volumes:
+      - "${LIBRARY_PATH:-./library}:/library"
+      - /home/armin/code-ai/practice/Zimanova/data:/data
+      - /home/armin/code-ai/practice/Zimanova/cache:/cache
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: echo-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - /home/armin/code-ai/practice/Zimanova/ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

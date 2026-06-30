@@ -20,11 +20,11 @@ import logging
 import threading
 from datetime import datetime
 
-from config import ROOT_DIR
+from config import DATA_DIR
 
 log = logging.getLogger("mytube.progress")
 
-PROGRESS_FILE = ROOT_DIR / "watch_state.json"
+PROGRESS_FILE = DATA_DIR / "watch_state.json"
 WATCHED_RATIO = 0.9          # ≥90% counts as "watched"
 _lock = threading.Lock()
 

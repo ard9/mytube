@@ -44,7 +44,7 @@ import wave
 from datetime import datetime
 from pathlib import Path
 
-from config import ROOT_DIR
+from config import DATA_DIR
 import config
 
 log = logging.getLogger("mytube.tts")
@@ -52,10 +52,10 @@ log = logging.getLogger("mytube.tts")
 # --------------------------------------------------------------------------- #
 # Storage layout (mirrors dictionary.py's style)
 # --------------------------------------------------------------------------- #
-LIBRARY_FILE = ROOT_DIR / "tts_library.json"
-MEDIA_DIR = ROOT_DIR / "tts_media"          # the built-in default output folder
-VOICES_FILE = ROOT_DIR / "tts_voices.json"
-VOICES_DIR = ROOT_DIR / "tts_voices"
+LIBRARY_FILE = DATA_DIR / "tts_library.json"
+MEDIA_DIR = DATA_DIR / "tts_media"          # the built-in default output folder
+VOICES_FILE = DATA_DIR / "tts_voices.json"
+VOICES_DIR = DATA_DIR / "tts_voices"
 
 SAMPLE_RATE = 24000          # StyleTTS2 LibriTTS model output rate
 MAX_CHUNK_CHARS = 400        # stay safely under StyleTTS2's ~420-char limit
@@ -142,7 +142,40 @@ def _get_model(job: dict | None = None):
             _model_cache["model"] = _styletts2_tts.StyleTTS2(phoneme_converter="gruut")
             _model_cache["module"] = _styletts2_tts
             log.info("StyleTTS2 model ready.")
+            _log_device(_model_cache["model"])
         return _model_cache["model"], _model_cache["module"]
+
+
+def _log_device(model) -> None:
+    """
+    Say plainly, in the console, whether StyleTTS2 ended up on the GPU or the CPU.
+
+    StyleTTS2 picks its device itself with ``torch.cuda.is_available()`` (it has
+    no ``device`` argument), so the *only* thing that decides GPU vs CPU is
+    whether a CUDA-enabled PyTorch can see your GPU. If you ever wonder "is TTS
+    using my GPU?", this log line is the answer.
+    """
+    try:
+        import torch
+        dev = getattr(model, "device", "?")
+        if torch.cuda.is_available():
+            try:
+                name = torch.cuda.get_device_name(0)
+            except Exception:  # noqa: BLE001
+                name = "unknown GPU"
+            log.info("StyleTTS2 device = GPU  (%s) | device=%s, torch %s, CUDA %s",
+                     name, dev, torch.__version__, torch.version.cuda)
+        else:
+            log.warning(
+                "StyleTTS2 device = CPU  (device=%s, torch %s). "
+                "torch.cuda.is_available() is False, so no CUDA GPU is usable here "
+                "and TTS will be slow. This is almost always a CPU-only PyTorch "
+                "build. To use the GPU, reinstall torch from a CUDA wheel index "
+                "(e.g. https://download.pytorch.org/whl/cu126).",
+                dev, torch.__version__,
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.info("Could not determine StyleTTS2 device: %s", exc)
 
 
 def _default_ref_style(model, module):

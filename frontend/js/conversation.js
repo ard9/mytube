@@ -8,6 +8,7 @@
 
 import { api } from './api.js';
 import { esc } from './state.js';
+import { WhisperStream } from './whisperStream.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -54,6 +55,7 @@ const conv = {
   partialTimer: null,
   partialBusy: false,
   lastPartialSamples: 0,
+  streamer: null,            // WhisperStream instance (real-time whisper streaming)
 };
 
 /* ---------- small helpers ---------- */
@@ -512,6 +514,15 @@ function setV2vState(s) {
   const label = $('convV2vLabel');
   if (orb) orb.className = 'conv-v2v-orb ' + s;
   if (label) label.textContent = V2V_LABELS[s] || s;
+  // drive the streaming mic's capture mode from the conversation state:
+  //   listening/capturing -> active (transcribe + auto-send)
+  //   speaking            -> watch for barge-in but don't transcribe the TTS
+  //   thinking/idle       -> muted
+  if (conv.streamer) {
+    const mode = (s === 'listening' || s === 'capturing') ? 'active'
+               : (s === 'speaking') ? 'speaking' : 'muted';
+    conv.streamer.setMode(mode);
+  }
   // clear the recognition buffer whenever we stop actively listening,
   // so leaked TTS / stray audio never bleeds into the next turn
   if (s === 'thinking' || s === 'speaking') {
@@ -541,38 +552,6 @@ async function startHandsFree() {
     openSettings();
     return;
   }
-  // mic + audio graph for VAD
-  try {
-    conv.vadStream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  } catch (e) {
-    setStatus('Microphone permission is needed for voice-to-voice: ' + e.message, 'error');
-    return;
-  }
-  try {
-    const Ctx = window.AudioContext || window.webkitAudioContext;
-    conv.audioCtx = new Ctx();
-    if (conv.audioCtx.state === 'suspended') { try { await conv.audioCtx.resume(); } catch {} }
-    // ONE source feeds both the VAD analyser and the PCM capture tap. Creating a
-    // second source from the same stream makes Chrome hand the second one silence.
-    conv.vadSource = conv.audioCtx.createMediaStreamSource(conv.vadStream);
-    conv.analyser = conv.audioCtx.createAnalyser();
-    conv.analyser.fftSize = 1024;
-    conv.analyser.smoothingTimeConstant = 0.2;
-    conv.vadSource.connect(conv.analyser);
-    conv.vadData = new Uint8Array(conv.analyser.fftSize);
-  } catch (e) {
-    setStatus('Could not start audio analysis: ' + e.message, 'error');
-    releaseVadStream();
-    return;
-  }
-
-  // whisper input needs the server package; warn early instead of failing silently
-  if (conv.sttMode === 'whisper' && conv.avail && !conv.avail.whisper) {
-    setStatus('Whisper isn’t installed on the server (pip install faster-whisper). '
-      + 'Switch input to “Browser mic” for instant live text.', 'warn');
-  }
 
   conv.handsFree = true;
   conv.inSpeech = false;
@@ -580,19 +559,96 @@ async function startHandsFree() {
   conv.belowSince = 0;
   conv.calibStart = performance.now();
   conv.noiseFloor = 0.01;
+
+  if (conv.sttMode === 'whisper') {
+    // ---- real-time Whisper streaming (WebSocket, LocalAgreement-2) ----
+    if (conv.avail && !conv.avail.whisper) {
+      setStatus('Whisper isn’t installed on the server (pip install faster-whisper). '
+        + 'Switch input to “Browser mic” for instant live text.', 'warn');
+      conv.handsFree = false;
+      return;
+    }
+    try {
+      conv.streamer = new WhisperStream({
+        silenceMs: conv.silenceMs || 800,
+        sensitivity: conv.sensitivity ?? 0.5,
+        sendIntervalMs: (conv.settings && conv.settings.stream_send_interval_ms) || 250,
+        lang: (conv.settings && conv.settings.stream_language) || 'en',
+        onState: (st) => {
+          if (st === 'speaking' && conv.v2vState === 'listening') setV2vState('capturing');
+        },
+        onBargeIn: () => {
+          // user started talking while the tutor was speaking. Set capturing
+          // FIRST, then stop the TTS — stopSpeaking() can fire the speak() "ended"
+          // callback, which would otherwise flip us back to 'listening'.
+          if (conv.v2vState === 'speaking') setV2vState('capturing');
+          stopSpeaking();
+        },
+        onLevel: (rms, threshold) => {
+          const fill = $('convV2vMeterFill');
+          if (fill) fill.style.width = Math.min(100, Math.round((rms / (threshold * 2.2)) * 100)) + '%';
+        },
+        onPartial: (committed, pending) => {
+          if (conv.v2vState !== 'capturing') return;
+          const box = $('convInterim');
+          box.hidden = false;
+          box.innerHTML = esc(committed)
+            + (pending ? ' <span class="conv-pending">' + esc(pending) + '</span>' : '');
+        },
+        onFinal: (text) => {
+          $('convInterim').hidden = true;
+          const t = (text || '').trim();
+          if (t) commitTurn(t);
+          else setV2vState('listening');
+        },
+        onError: (msg) => setStatus(msg, 'warn'),
+      });
+      await conv.streamer.start();
+    } catch (e) {
+      setStatus('Could not start streaming mic: ' + e.message, 'error');
+      conv.handsFree = false;
+      conv.streamer = null;
+      return;
+    }
+  } else {
+    // ---- browser (Google) live recognition: needs the VAD analyser graph ----
+    try {
+      conv.vadStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+    } catch (e) {
+      setStatus('Microphone permission is needed for voice-to-voice: ' + e.message, 'error');
+      conv.handsFree = false;
+      return;
+    }
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      conv.audioCtx = new Ctx();
+      if (conv.audioCtx.state === 'suspended') { try { await conv.audioCtx.resume(); } catch {} }
+      conv.vadSource = conv.audioCtx.createMediaStreamSource(conv.vadStream);
+      conv.analyser = conv.audioCtx.createAnalyser();
+      conv.analyser.fftSize = 1024;
+      conv.analyser.smoothingTimeConstant = 0.2;
+      conv.vadSource.connect(conv.analyser);
+      conv.vadData = new Uint8Array(conv.analyser.fftSize);
+    } catch (e) {
+      setStatus('Could not start audio analysis: ' + e.message, 'error');
+      releaseVadStream();
+      conv.handsFree = false;
+      return;
+    }
+    startV2vRecognition();
+  }
+
   updateV2vButton();
   $('convV2vPanel').hidden = false;
   $('convMic').disabled = true;          // manual push-to-talk is off while hands-free
   setStatus('Voice-to-voice on. Headphones strongly recommended to avoid echo.', 'warn');
-
-  // browser STT: keep a recognizer running for the whole session
-  if (conv.sttMode === 'browser') startV2vRecognition();
-  else setupPcmTap();                    // whisper: live streaming PCM pipeline
   $('convSttSeg').classList.add('locked');
 
   // greet if this is a fresh/empty session, otherwise just listen
   setV2vState('listening');
-  vadLoop();
+  if (conv.sttMode === 'browser') vadLoop();   // whisper: WhisperStream runs its own VAD
 
   if (!conv.currentId) {
     await newConversation();   // greeting plays, then speakReply returns us to listening
@@ -616,6 +672,7 @@ async function startHandsFree() {
 
 function stopHandsFree() {
   conv.handsFree = false;
+  if (conv.streamer) { try { conv.streamer.stop(); } catch {} conv.streamer = null; }
   if (conv.vadRAF) { cancelAnimationFrame(conv.vadRAF); conv.vadRAF = null; }
   stopV2vRecognition();
   teardownPcmTap();

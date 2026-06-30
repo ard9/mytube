@@ -22,12 +22,13 @@ knowledge_base/
 # Logs
 *.log
 logs/
-
+ollama_models/
+tts_media/
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
-
+*.json
 # IDE
 .vscode/
 .idea/

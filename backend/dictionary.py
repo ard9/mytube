@@ -43,13 +43,13 @@ import uuid
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from config import ROOT_DIR, get_library_path
+from config import DATA_DIR, get_library_path
 
 log = logging.getLogger("mytube.dictionary")
 
-DICT_FILE = ROOT_DIR / "dictionary.json"
-MEDIA_DIR = ROOT_DIR / "dict_media"
-HISTORY_FILE = ROOT_DIR / "srs_history.json"   # {"YYYY-MM-DD": reviews_that_day}
+DICT_FILE = DATA_DIR / "dictionary.json"
+MEDIA_DIR = DATA_DIR / "dict_media"
+HISTORY_FILE = DATA_DIR / "srs_history.json"   # {"YYYY-MM-DD": reviews_that_day}
 _lock = threading.Lock()
 _hist_lock = threading.Lock()
 
