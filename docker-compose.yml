@@ -2,7 +2,7 @@ services:
   Zaravan:
     build: .
     image: echo-mytube:v4.0.0
-    container_name: Zaravan-mytube
+    container_name: Zaravan
     ports:
       - "8420:8420"
 
@@ -16,8 +16,8 @@ services:
 
     volumes:
       - "${LIBRARY_PATH:-./library}:/library"
-      - /home/armin/code-ai/practice/Zimanova/data:/data
-      - /home/armin/code-ai/practice/Zimanova/cache:/cache
+      - ./data:/data
+      - ./cache:/cache
 
     deploy:
       resources:
@@ -37,7 +37,7 @@ services:
     ports:
       - "11434:11434"
     volumes:
-          - /home/armin/code-ai/practice/Zibanimen/ollama_models/models:/root/.ollama/models
+          - ./ollama_models/models:/root/.ollama/models
     deploy:
       resources:
         reservations:
