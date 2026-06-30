@@ -1,6 +1,6 @@
-# Echo — a local, private English‑learning workstation
+# Zaravan — a local, private English‑learning workstation
 
-Echo turns a folder of videos (and audio) into a complete, **offline‑first** English‑learning environment: watch with subtitles, generate subtitles when a video has none, turn any text into speech, build a spaced‑repetition flashcard deck with real audio/video clips, and practice **speaking** with an AI tutor that gently corrects your mistakes — all running on **your own machine**, with no account and no data leaving your computer.
+Zaravan turns a folder of videos (and audio) into a complete, **offline‑first** English‑learning environment: watch with subtitles, generate subtitles when a video has none, turn any text into speech, build a spaced‑repetition flashcard deck with real audio/video clips, and practice **speaking** with an AI tutor that gently corrects your mistakes — all running on **your own machine**, with no account and no data leaving your computer.
 
 It speaks to a local LLM (or any API you plug in), so the conversation tutor can run **fully on‑device** through [Ollama](https://ollama.com).
 
@@ -8,7 +8,7 @@ It speaks to a local LLM (or any API you plug in), so the conversation tutor can
 
 ## ✨ Features
 
-- **📺 Local library** — point Echo at a folder and it organizes your media by **category → channel**, reading metadata from yt‑dlp `*.info.json` when present. Audio files (mp3, m4a, wav, flac, …) sit right alongside videos and behave the same way.
+- **📺 Local library** — point Zaravan at a folder and it organizes your media by **category → channel**, reading metadata from yt‑dlp `*.info.json` when present. Audio files (mp3, m4a, wav, flac, …) sit right alongside videos and behave the same way.
 - **🎬 Watch page** — resume where you left off, adjustable playback speed, autoplay next, captions, and **"find in this video"** to jump to any spoken phrase.
 - **✍️ Offline subtitle generation** — no captions? Generate them locally with **Whisper** (faster‑whisper) for any spoken language, with optional translation to English. GPU‑accelerated when available, CPU fallback otherwise.
 - **🔊 Text‑to‑speech (two engines)** — paste text and hear it:
@@ -17,7 +17,7 @@ It speaks to a local LLM (or any API you plug in), so the conversation tutor can
   - Long text is split into sentences and stitched back together, with **read‑along** highlighting.
 - **📖 Word bank (spaced repetition)** — save words and sentences as flashcards with an **SRS** scheduler. Cards can carry an **audio / image / video clip** cut straight from the source, so you review the word *in context*, with sound.
 - **🎤 Live conversation tutor** — speak (browser mic or local Whisper), the tutor replies in text **and voice**, and flags your mistakes as `original → corrected` with an explanation in your language. Each correction can be saved to the Word bank **with generated speech audio** in one click.
-- **⬇️ Add from YouTube** — paste a URL or channel and Echo downloads it into the library (via yt‑dlp), with optional subtitles.
+- **⬇️ Add from YouTube** — paste a URL or channel and Zaravan downloads it into the library (via yt‑dlp), with optional subtitles.
 - **🔐 Private by design** — everything runs locally. Cloud LLMs are *optional*; with Ollama, even the tutor is offline.
 
 ---
@@ -37,10 +37,10 @@ docker compose up -d
 #    http://localhost:8420
 ```
 
-This starts two containers: **`echo-mytube`** (the app) and **`echo-ollama`** (a local LLM server). They share a Docker network, so inside the app's **AI settings** set the Ollama base URL to:
+This starts two containers: **`Zaravan-mytube`** (the app) and **`Zaravan-ollama`** (a local LLM server). They share a Docker network, so inside the app's **AI settings** set the Ollama base URL to:
 
 ```
-http://echo-ollama:11434
+http://Zaravan-ollama:11434
 ```
 
 > The app runs *inside a container*, so `localhost:11434` would point at the app container itself — use the Ollama **container name**, not `localhost`.
@@ -67,7 +67,7 @@ Then open **http://127.0.0.1:8420**.
 
 ## 🧩 Optional features & their dependencies
 
-Echo runs out of the box; the heavier features are opt‑in so you only install what you use.
+Zaravan runs out of the box; the heavier features are opt‑in so you only install what you use.
 
 | Feature | Install | Notes |
 |---|---|---|
@@ -85,14 +85,14 @@ The Docker image bundles ffmpeg and the GPU stacks for you.
 
 Open **Live conversation → AI settings** and pick a provider:
 
-- **Ollama (local, private):** base URL `http://echo-ollama:11434` (Docker) or `http://localhost:11434` (bare‑metal). Then set the **model name** to one you've actually pulled — verify with `ollama list`. A 3B‑class model or larger (e.g. `qwen2.5:3b`, `llama3.1:8b`) is recommended so the tutor reliably returns structured corrections; very small (1B) models often can't.
+- **Ollama (local, private):** base URL `http://Zaravan-ollama:11434` (Docker) or `http://localhost:11434` (bare‑metal). Then set the **model name** to one you've actually pulled — verify with `ollama list`. A 3B‑class model or larger (e.g. `qwen2.5:3b`, `llama3.1:8b`) is recommended so the tutor reliably returns structured corrections; very small (1B) models often can't.
 - **OpenRouter / OpenAI‑compatible / Gemini:** paste your API key. (Gemini is region‑restricted in some countries — if you get a `403`, use a proxy/VPN or switch to OpenRouter.)
 
 **Loading your own GGUF into Ollama** (one‑time, only for hand‑downloaded models):
 
 ```bash
-docker exec -it echo-ollama ollama create my-model -f /root/.ollama/models/Modelfile
-docker exec -it echo-ollama ollama list
+docker exec -it Zaravan-ollama ollama create my-model -f /root/.ollama/models/Modelfile
+docker exec -it Zaravan-ollama ollama list
 ```
 
 For catalog models, just `ollama pull <name>` — no Modelfile needed.
@@ -105,7 +105,7 @@ Settings live in **`config.json`** (editable from the UI) and can be overridden 
 
 | Env var | Meaning | Default |
 |---|---|---|
-| `MYTUBE_LIBRARY_PATH` | Folder Echo scans for media | `D:\English\youtube_english` |
+| `MYTUBE_LIBRARY_PATH` | Folder Zaravan scans for media | `D:\English\youtube_english` |
 | `MYTUBE_DATA_DIR` | Where writable state is stored | project root (`/data` in Docker) |
 | `MYTUBE_YTDLP_BIN` | yt‑dlp binary | `yt-dlp` |
 | `MYTUBE_TTS_OUTPUT_DIR` | Where generated speech is saved | app default folder |
@@ -202,7 +202,7 @@ The `/api/download` endpoint also gained an optional `subtitles` field
 
 ## 🔒 Privacy
 
-Echo stores everything on your machine: your library, notes, flashcards, and conversation sessions. No telemetry, no account. The only time data leaves your computer is if **you** choose a cloud LLM provider or the online gTTS engine — and both have fully local alternatives (Ollama and StyleTTS2).
+Zaravan stores everything on your machine: your library, notes, flashcards, and conversation sessions. No telemetry, no account. The only time data leaves your computer is if **you** choose a cloud LLM provider or the online gTTS engine — and both have fully local alternatives (Ollama and StyleTTS2).
 
 ---
 

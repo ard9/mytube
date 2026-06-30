@@ -1,8 +1,8 @@
 services:
-  echo:
+  Zaravan:
     build: .
     image: echo-mytube:v4.0.0
-    container_name: echo-mytube
+    container_name: Zaravan-mytube
     ports:
       - "8420:8420"
 
@@ -33,7 +33,7 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: echo-ollama
+    container_name: Zaravan-ollama
     ports:
       - "11434:11434"
     volumes:
