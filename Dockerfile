@@ -11,8 +11,8 @@
 #      docker build -t echo-mytube .
 #  …but normally you'll just use docker-compose (see docker-compose.yml).
 # =============================================================================
-#FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
-FROM echo-mytube:v3.0.0
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
 # Quieter apt, no .pyc files, unbuffered logs so `docker logs` is live.
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1 \
